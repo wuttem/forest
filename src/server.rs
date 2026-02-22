@@ -15,12 +15,12 @@ pub type ConnectionSet = dashmap::DashSet<String>;
 pub async fn start_server(config: &ForestConfig) -> CancellationToken {
     let db_path = PathBuf::from(&config.database.path);
 
-    let maybe_db = DB::open_default(db_path.to_str().unwrap());
+    let maybe_db = DB::open_default(db_path.to_str().unwrap()).await;
     let db = {
         match maybe_db {
             Ok(db) => Arc::new(db),
             Err(e) => {
-                panic!("Failed to open RocksDB: {:?}", e);
+                panic!("Failed to open DB: {:?}", e);
             }
         }
     };
@@ -30,13 +30,13 @@ pub async fn start_server(config: &ForestConfig) -> CancellationToken {
     let mut mqtt_broker = start_broker(Some(config.mqtt.clone())).await;
     let _broker_cancel_token = mqtt_broker.cancel_token.clone();
     let mqtt_sender = mqtt_broker.mqtt.clone();
-    let mqtt_receiver = mqtt_broker.message_receiver();
+    let mqtt_admin = mqtt_broker.admin.take().unwrap(); // Move admin out of MqttServer
     let processor_db = db.clone();
     let connection_monitor_rx = mqtt_broker.connection_monitor_subscribe();
     let maybe_processor = start_processor(
         processor_db,
         mqtt_sender,
-        mqtt_receiver,
+        mqtt_admin,
         connection_monitor_rx,
         connected_clients.clone(),
         config.processor.clone(),

@@ -16,14 +16,13 @@ path = "src/forest.rs"
 test = false
 
 [dependencies]
-rocksdb = { version = "0.23.0", features = ["snappy", "lz4", "zstd", "zlib", "bzip2"] }
 serde = { version = "1.0.217", features = ["derive"] }
 bincode = "1.3.3"
 thiserror = "2.0.11"
 chrono = "0.4.39"
 serde_json = "1.0.137"
-# rumqttd = { version = "0.19.0", path = "../../../../rumqtt/rumqttd", features = ["validate-client-prefix", "use-rustls", "verify-client-cert"] }
-rumqttd = { git = "https://github.com/wuttem/rumqtt.git", rev = "c64fca5d45e31efbcb4392067b4e526a32fc3551", features = ["validate-client-prefix", "use-rustls", "verify-client-cert"] }
+# rumqttd = { git = "https://github.com/wuttem/rumqtt.git", rev = "c64fca5d45e31efbcb4392067b4e526a32fc3551", features = ["validate-client-prefix", "use-rustls", "verify-client-cert"] }
+rumqttd = { version = "0.20.0", path = "../rumqtt/rumqttd", features = ["validate-client-prefix", "use-rustls", "verify-client-cert"] }
 tokio = { version = "1.43.0", features = ["full"] }
 config = "0.15.6"
 flume = { version = "0.11.1", features = ["async"] }
@@ -36,6 +35,8 @@ dashmap = "6.1.0"
 clap = { version = "4.5.29", features = ["derive"] }
 reqwest = { version = "0.12.12", features = ["json"] }
 openssl = { version = "0.10.71", features = ["vendored"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "any", "sqlite", "postgres", "macros"] }
+uuid = { version = "1.21.0", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.15.0"

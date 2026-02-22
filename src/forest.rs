@@ -90,7 +90,7 @@ fn main() {
             run_create_backup(rt, config);
         },
         Commands::CreateDevice { device_id } => {
-            create_device(device_id, config);
+            create_device(rt, &device_id, config);
         },
     }
 }
@@ -155,37 +155,38 @@ fn setup_server_certs(config: &ForestConfig) {
     }
 }
 
-fn create_device(device_id: &str, config: ForestConfig) {
+fn create_device(rt: Runtime, device_id: &str, config: ForestConfig) {
     println!("Creating device: {}", device_id);
 
     let cert_manager = Arc::new(get_certificate_manager(&config));
-    let db_path = PathBuf::from(&config.database.path);
-    let maybe_db = DB::open_default(db_path.to_str().unwrap());
-    let db = {
-        match maybe_db {
+    let db_path = config.database.path.clone();
+
+    rt.block_on(async {
+        let maybe_db = DB::open_default(&db_path).await;
+        let db = match maybe_db {
             Ok(db) => Arc::new(db),
             Err(e) => {
-                panic!("Failed to open RocksDB: {:?}", e);
+                panic!("Failed to open DB: {:?}", e);
             }
+        };
+
+        let tenant_id = config.tenant_id.as_deref();
+        let tenant = TenantId::from_option(tenant_id);
+
+        match create_device_api(device_id, &tenant, db, cert_manager).await {
+            Ok(device) => {
+                tracing::info!("Device successfully created");
+                println!("\nDevice ID: \n{}", device.device_id);
+                if let Some(key) = &device.key {
+                    println!("\nDevice Key: \n{}", key);
+                }
+                if let Some(cert) = &device.certificate {
+                    println!("\nDevice Cert: \n{}", cert);
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to create device: {}", e);
+            },
         }
-    };
-
-    let tenant_id = config.tenant_id.as_deref();
-    let tenant = TenantId::from_option(tenant_id);
-
-    match create_device_api(device_id, &tenant, db, cert_manager) {
-        Ok(device) => {
-            tracing::info!("Device successfully created");
-            println!("\nDevice ID: \n{}", device.device_id);
-            if let Some(key) = &device.key {
-                println!("\nDevice Key: \n{}", key);
-            }
-            if let Some(cert) = &device.certificate {
-                println!("\nDevice Cert: \n{}", cert);
-            }
-        },
-        Err(e) => {
-            tracing::error!("Failed to create device: {}", e);
-        },
-    }
+    });
 }

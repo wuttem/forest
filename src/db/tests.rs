@@ -4,29 +4,23 @@ use crate::shadow::StateDocument;
 use crate::timeseries::FloatTimeSeries;
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use uuid::Uuid;
 
-fn setup_db() -> (DB, TempDir) {
+async fn setup_db() -> (DB, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let mut config = DatabaseConfig::default();
-    config.path = temp_dir.path().to_str().unwrap().to_string();
+    let db_id = Uuid::new_v4().simple();
+    config.path = format!("sqlite:file:memdb_{}?mode=memory&cache=shared", db_id);
     let backup_path = temp_dir.path().join("backup");
     config.backup_path = backup_path.to_str().unwrap().to_string();
 
-    let db = DB::open(&config).unwrap();
-    // let mut options = rocksdb::Options::default();
-    // options.create_if_missing(true);
-    // let db = Arc::new(OptimisticTransactionDB::open(&options, temp_dir.path()).unwrap());
-    // let db_py = DB {
-    //     path: temp_dir.path().to_str().unwrap().to_string(),
-    //     backup_path
-    //     db: Some(db),
-    // };
+    let db = DB::open(&config).await.unwrap();
     (db, temp_dir)
 }
 
-#[test]
-fn test_put_get_multiple_buckets() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_put_get_multiple_buckets() {
+    let (db, _temp) = setup_db().await;
     let mut ts = FloatTimeSeries::new();
     // Two hours of data
     ts.add_point(1710511200, 1.0); // Hour 1
@@ -34,11 +28,13 @@ fn test_put_get_multiple_buckets() {
 
     let key = b"test2";
     db._put_timeseries(key, &MetricTimeSeries::from(&ts))
+        .await
         .unwrap();
 
     // Query first hour only
     let result = db
         ._get_timeseries(key, 1710511200, 1710511200 + 3599)
+        .await
         .unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(
@@ -47,90 +43,38 @@ fn test_put_get_multiple_buckets() {
     );
 }
 
-#[test]
-fn test_no_db_connection_ts() {
+#[tokio::test]
+async fn test_no_db_connection_ts() {
     let db = DB {
         path: String::from("path"),
         backup_path: String::from("backup"),
-        db: None,
+        pool: None,
     };
     let ts = FloatTimeSeries::new();
 
     assert!(matches!(
-        db._put_timeseries(b"key", &MetricTimeSeries::from(&ts)),
+        db._put_timeseries(b"key", &MetricTimeSeries::from(&ts)).await,
         Err(DatabaseError::DatabaseConnectionError)
     ));
 
     assert!(matches!(
-        db._get_timeseries(b"key", 0, 1),
+        db._get_timeseries(b"key", 0, 1).await,
         Err(DatabaseError::DatabaseConnectionError)
     ));
 }
 
-#[test]
-fn test_empty_range() {
-    let (db, _temp) = setup_db();
-    let result = db._get_timeseries(b"nonexistent", 0, 1).unwrap();
+#[tokio::test]
+async fn test_empty_range() {
+    let (db, _temp) = setup_db().await;
+    let result = db._get_timeseries(b"nonexistent", 0, 1).await.unwrap();
     assert_eq!(result.len(), 0);
 }
 
-#[test]
-fn test_ts_key_ordering() {
-    // Base keys
-    let key_a = b"a";
-    let key_b = b"b";
-    let key_ab = b"ab";
+// Test `test_ts_key_ordering` removed as it is RocksDB specific //
 
-    // March 15, 2024 14:00-16:00 UTC
-    let ts1 = 1710511200; // 14:00
-    let ts2 = ts1 + 3600; // 15:00
-    let ts3 = ts1 + 7200; // 16:00
-
-    // Generate full keys
-    let key_a1 = DB::_to_ts_key(key_a, ts1);
-    let key_a2 = DB::_to_ts_key(key_a, ts2);
-    let key_a3 = DB::_to_ts_key(key_a, ts3);
-    let key_b1 = DB::_to_ts_key(key_b, ts1);
-    let key_ab1 = DB::_to_ts_key(key_ab, ts2);
-
-    // Convert to strings for inspection
-    let str_a1 = String::from_utf8_lossy(&key_a1);
-    let str_a2 = String::from_utf8_lossy(&key_a2);
-    let str_a3 = String::from_utf8_lossy(&key_a3);
-    let str_b1 = String::from_utf8_lossy(&key_b1);
-    let str_ab1 = String::from_utf8_lossy(&key_ab1);
-
-    // Verify string format
-    assert_eq!(str_a1, "a#0976091609");
-    assert_eq!(str_a2, "a#0976091608");
-    assert_eq!(str_a3, "a#0976091607");
-    assert_eq!(str_ab1, "ab#0976091608");
-    assert_eq!(str_b1, "b#0976091609");
-
-    // Test ordering within same base key
-    assert!(key_a1 > key_a2);
-    assert!(key_a2 > key_a3);
-
-    // Test ordering across different base keys
-    assert!(key_a1 < key_b1);
-    assert!(key_a2 < key_b1);
-    assert!(key_a3 < key_b1);
-
-    // Test ordering with different base key lengths
-    assert!(key_a1 < key_ab1);
-    assert!(key_a2 < key_ab1);
-    assert!(key_a3 < key_ab1);
-    assert!(key_b1 > key_ab1);
-
-    // Test key parsing
-    let (parsed_key, parsed_ts) = DB::_from_ts_key(&key_a1).unwrap();
-    assert_eq!(parsed_key, key_a);
-    assert_eq!(parsed_ts, ts1);
-}
-
-#[test]
-fn test_get_timeseries_last() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_get_timeseries_last() {
+    let (db, _temp) = setup_db().await;
 
     // Create test data with multiple timestamps
     let mut ts1 = FloatTimeSeries::new();
@@ -145,12 +89,14 @@ fn test_get_timeseries_last() {
 
     // Store both timeseries
     db._put_timeseries(key, &MetricTimeSeries::from(&ts1))
+        .await
         .unwrap();
     db._put_timeseries(key, &MetricTimeSeries::from(&ts2))
+        .await
         .unwrap();
 
     // Test getting last point
-    let result = db._get_timeseries_last(key, 1).unwrap();
+    let result = db._get_timeseries_last(key, 1).await.unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(
         *result.get_value_for_timestamp(1710514800 + 1800).unwrap(),
@@ -158,28 +104,28 @@ fn test_get_timeseries_last() {
     );
 
     // Test getting more points than available
-    let result = db._get_timeseries_last(key, 10).unwrap();
+    let result = db._get_timeseries_last(key, 10).await.unwrap();
     assert_eq!(result.len(), 4);
 
     // Test empty key
-    let result = db._get_timeseries_last(b"nonexistent", 1).unwrap();
+    let result = db._get_timeseries_last(b"nonexistent", 1).await.unwrap();
     assert_eq!(result.len(), 0);
 
     // Test no DB connection
     let db_no_conn = DB {
         path: "path".to_string(),
         backup_path: "backup".to_string(),
-        db: None,
+        pool: None,
     };
     assert!(matches!(
-        db_no_conn._get_timeseries_last(key, 1),
+        db_no_conn._get_timeseries_last(key, 1).await,
         Err(DatabaseError::DatabaseConnectionError)
     ));
 }
 
-#[test]
-fn test_upsert_shadow() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_upsert_shadow() {
+    let (db, _temp) = setup_db().await;
 
     // Create initial update
     let update1 = StateUpdateDocument {
@@ -197,12 +143,9 @@ fn test_upsert_shadow() {
     };
 
     // Test initial insert
-    db._upsert_shadow(&update1).unwrap();
+    db._upsert_shadow(&update1).await.unwrap();
 
-    // Verify shadow was created
-    let key = DB::_to_shadow_key(&update1.device_id, &update1.shadow_name, &update1.tenant_id);
-    let shadow_data = db.db.as_ref().unwrap().get(&key).unwrap().unwrap();
-    let shadow: Shadow = serde_json::from_slice(&shadow_data).unwrap();
+    let shadow = db._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default).await.unwrap();
 
     assert_eq!(shadow.device_id, "thermostat-01");
     assert_eq!(shadow.get_reported_value()["temperature"], 22.5);
@@ -221,11 +164,10 @@ fn test_upsert_shadow() {
         },
     };
 
-    db._upsert_shadow(&update2).unwrap();
+    db._upsert_shadow(&update2).await.unwrap();
 
     // Verify shadow was updated
-    let shadow_data = db.db.as_ref().unwrap().get(&key).unwrap().unwrap();
-    let shadow: Shadow = serde_json::from_slice(&shadow_data).unwrap();
+    let shadow = db._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default).await.unwrap();
     let desired = shadow.get_desired_value();
     let reported = shadow.get_reported_value();
     assert_eq!(desired["temperature"], 21.0);
@@ -246,10 +188,9 @@ fn test_upsert_shadow() {
             delta: Value::Null,
         },
     };
-    db._upsert_shadow(&update3).unwrap();
+    db._upsert_shadow(&update3).await.unwrap();
 
-    let shadow_data = db.db.as_ref().unwrap().get(&key).unwrap().unwrap();
-    let shadow: Shadow = serde_json::from_slice(&shadow_data).unwrap();
+    let shadow = db._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default).await.unwrap();
     let desired = shadow.get_desired_value();
     let reported = shadow.get_reported_value();
     assert_eq!(desired["temperature"], 21.0);
@@ -258,6 +199,7 @@ fn test_upsert_shadow() {
 
     let store_shadow = db
         ._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default)
+        .await
         .unwrap();
     let desired = shadow.get_desired_value();
     let reported = shadow.get_reported_value();
@@ -267,9 +209,9 @@ fn test_upsert_shadow() {
     assert_eq!(*store_shadow.get_delta_value(), Value::Null);
 }
 
-#[test]
-fn test_store_and_get_tenant_data_config() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_store_and_get_tenant_data_config() {
+    let (db, _temp) = setup_db().await;
 
     let config = DataConfig {
         metrics: vec![
@@ -286,14 +228,14 @@ fn test_store_and_get_tenant_data_config() {
         ],
     };
 
-    db.store_tenant_data_config(&TenantId::Default, &config).unwrap();
-    let actual = db.get_data_config(&TenantId::Default, None).unwrap().unwrap();
+    db.store_tenant_data_config(&TenantId::Default, &config).await.unwrap();
+    let actual = db.get_data_config(&TenantId::Default, None).await.unwrap().unwrap();
     assert_eq!(actual.metrics.len(), 2);
 }
 
-#[test]
-fn test_store_and_get_device_data_config() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_store_and_get_device_data_config() {
+    let (db, _temp) = setup_db().await;
 
     let tenant_config = DataConfig {
         metrics: vec![MetricConfig {
@@ -303,10 +245,12 @@ fn test_store_and_get_device_data_config() {
         }],
     };
     db.store_tenant_data_config(&TenantId::new("tenant2"), &tenant_config)
+        .await
         .unwrap();
 
     let base = db
         .get_data_config(&TenantId::new("tenant2"), Some("deviceA1"))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(base.metrics.len(), 1);
@@ -321,11 +265,13 @@ fn test_store_and_get_device_data_config() {
         }],
     };
     db.store_device_data_config(&TenantId::new("tenant2"), "deviceA", &device_config)
+        .await
         .unwrap();
 
     // Should merge tenant config + device config
     let merged = db
         .get_data_config(&TenantId::new("tenant2"), Some("deviceA1"))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(merged.metrics.len(), 1);
@@ -340,10 +286,12 @@ fn test_store_and_get_device_data_config() {
         }],
     };
     db.store_device_data_config(&TenantId::new("tenant2"), "deviceA1", &device_config)
+        .await
         .unwrap();
 
     let merged = db
         .get_data_config(&TenantId::new("tenant2"), Some("deviceA1"))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(merged.metrics.len(), 2);
@@ -353,9 +301,9 @@ fn test_store_and_get_device_data_config() {
     assert_eq!(merged.metrics[1].data_type, DataType::Float);
 }
 
-#[test]
-fn test_delete_data_config() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_delete_data_config() {
+    let (db, _temp) = setup_db().await;
 
     // Setup test data
     let tenant_config = DataConfig {
@@ -375,32 +323,35 @@ fn test_delete_data_config() {
 
     // Store configs
     db.store_tenant_data_config(&TenantId::new("tenant1"), &tenant_config)
+        .await
         .unwrap();
     db.store_device_data_config(&TenantId::new("tenant1"), "device1", &device_config)
+        .await
         .unwrap();
 
     // Delete device config
-    db.delete_data_config(&TenantId::new("tenant1"), Some("device1")).unwrap();
+    db.delete_data_config(&TenantId::new("tenant1"), Some("device1")).await.unwrap();
 
     // Verify device config is gone but tenant config remains
     let result = db
         .get_data_config(&TenantId::new("tenant1"), Some("device1"))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(result.metrics.len(), 1);
     assert_eq!(result.metrics[0].name, "temperature");
 
     // Delete tenant config
-    db.delete_data_config(&TenantId::new("tenant1"), None).unwrap();
+    db.delete_data_config(&TenantId::new("tenant1"), None).await.unwrap();
 
     // Verify tenant config is gone
-    let result = db.get_data_config(&TenantId::new("tenant1"), None).unwrap();
+    let result = db.get_data_config(&TenantId::new("tenant1"), None).await.unwrap();
     assert!(matches!(result, None));
 }
 
-#[test]
-fn test_list_data_configs() {
-    let (db, _temp) = setup_db();
+#[tokio::test]
+async fn test_list_data_configs() {
+    let (db, _temp) = setup_db().await;
 
     // Setup test data
     let tenant_config = DataConfig {
@@ -427,14 +378,17 @@ fn test_list_data_configs() {
 
     // Store configs
     db.store_tenant_data_config(&TenantId::new("tenant1"), &tenant_config)
+        .await
         .unwrap();
     db.store_device_data_config(&TenantId::new("tenant1"), "device1", &device1_config)
+        .await
         .unwrap();
     db.store_device_data_config(&TenantId::new("tenant1"), "device2", &device2_config)
+        .await
         .unwrap();
 
     // List configs
-    let configs = db.list_data_configs(&TenantId::new("tenant1")).unwrap();
+    let configs = db.list_data_configs(&TenantId::new("tenant1")).await.unwrap();
 
     // Verify number of configs
     assert_eq!(configs.len(), 3);
@@ -463,6 +417,6 @@ fn test_list_data_configs() {
     assert_eq!(device2_entry.metrics[0].name, "pressure");
 
     // Verify empty list for non-existent tenant
-    let empty_configs = db.list_data_configs(&TenantId::new("tenant2")).unwrap();
+    let empty_configs = db.list_data_configs(&TenantId::new("tenant2")).await.unwrap();
     assert_eq!(empty_configs.len(), 0);
 }

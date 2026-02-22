@@ -66,7 +66,7 @@ pub async fn get_shadow_handler(
         Some(name) => ShadowName::from_str(name),
         None => ShadowName::Default,
     };
-    match db._get_shadow(&device_id, &shadow_name, &TenantId::Default) {
+    match db._get_shadow(&device_id, &shadow_name, &TenantId::Default).await {
         Ok(doc) => Ok(Json(doc)),
         Err(DatabaseError::NotFoundError(_)) => Err(AppError::NotFound(format!(
             "Shadow ({}) not found for device: {}",
@@ -96,7 +96,7 @@ pub async fn update_shadow_handler(
         &tenant_id,
     );
     // Upsert shadow
-    let shadow = match state.db._upsert_shadow(&update_doc) {
+    let shadow = match state.db._upsert_shadow(&update_doc).await {
         Ok(updated) => updated,
         Err(e) => return Err(AppError::DatabaseError(e)),
     };
@@ -124,7 +124,7 @@ pub async fn get_timeseries_handler(
 ) -> Result<Json<TimeSeriesModel>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::Default;
-    let timeseries = match db.get_metric(&tenant_id, &device_id, &metric, range.start, range.end) {
+    let timeseries = match db.get_metric(&tenant_id, &device_id, &metric, range.start, range.end).await {
         Ok(ts) => ts,
         Err(DatabaseError::NotFoundError(_)) => {
             return Err(AppError::NotFound(format!(
@@ -151,7 +151,7 @@ pub async fn get_last_timeseries_handler(
     let tenant_id = TenantId::Default;
     let limit = query.limit.unwrap_or(1);
 
-    let timeseries = match db.get_last_metric(&tenant_id, &device_id, &metric, limit) {
+    let timeseries = match db.get_last_metric(&tenant_id, &device_id, &metric, limit).await {
         Ok(ts) => ts,
         Err(DatabaseError::NotFoundError(_)) => {
             return Err(AppError::NotFound(format!(
@@ -172,7 +172,7 @@ pub async fn store_device_config_handler(
 ) -> Result<Json<DataConfig>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.store_device_data_config(&tenant_id, &device_prefix, &config) {
+    match db.store_device_data_config(&tenant_id, &device_prefix, &config).await {
         Ok(_) => Ok(Json(config)),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -185,7 +185,7 @@ pub async fn store_tenant_config_handler(
 ) -> Result<Json<DataConfig>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.store_tenant_data_config(&tenant_id, &config) {
+    match db.store_tenant_data_config(&tenant_id, &config).await {
         Ok(_) => Ok(Json(config)),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -197,7 +197,7 @@ pub async fn get_tenant_config_handler(
 ) -> Result<Json<DataConfig>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.get_data_config(&tenant_id, None) {
+    match db.get_data_config(&tenant_id, None).await {
         Ok(Some(config)) => Ok(Json(config)),
         Ok(None) => Err(AppError::NotFound(format!(
             "No config found for tenant: {}",
@@ -214,7 +214,7 @@ pub async fn get_config_handler(
 ) -> Result<Json<DataConfig>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.get_data_config(&tenant_id, Some(&device_id)) {
+    match db.get_data_config(&tenant_id, Some(&device_id)).await {
         Ok(Some(config)) => Ok(Json(config)),
         Ok(None) => Err(AppError::NotFound(format!(
             "No config found for tenant: {} and device: {:?}",
@@ -231,7 +231,7 @@ pub async fn delete_config_handler(
 ) -> Result<Json<()>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.delete_data_config(&tenant_id, device_prefix.as_deref()) {
+    match db.delete_data_config(&tenant_id, device_prefix.as_deref()).await {
         Ok(_) => Ok(Json(())),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -243,7 +243,7 @@ pub async fn list_configs_handler(
 ) -> Result<Json<Vec<DataConfigEntry>>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.list_data_configs(&tenant_id) {
+    match db.list_data_configs(&tenant_id).await {
         Ok(configs) => Ok(Json(configs)),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -266,7 +266,7 @@ pub async fn backup_database_handler(
 
     // Spawn the backup task and await its result
     let result = tokio::spawn(async move {
-        db.create_backup()
+        db.create_backup().await
     }).await
     .map_err(|e| AppError::InternalServerError(format!("Backup task failed: {}", e)))?;
 
@@ -282,7 +282,6 @@ pub struct PutDeviceBody {
     key: Option<String>,
 }
 
-// Handler to create or update device metadata
 pub async fn post_device_metadata_handler(
     Path((tenant_id, device_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -300,9 +299,9 @@ pub async fn post_device_metadata_handler(
         // You might want to store this key in the device metadata
         // or use it for certificate generation
     }
-    let metadata = create_device(&device_id, &tenant_id, db, cert_manager)?;
+    let metadata = create_device(&device_id, &tenant_id, db, cert_manager).await?;
 
-    match state.db.put_device_metadata(&metadata) {
+    match state.db.put_device_metadata(&metadata).await {
         Ok(_) => Ok(Json(metadata)),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -317,7 +316,7 @@ pub async fn get_device_info_handler(
     let tenant_id = TenantId::from_str(&tenant_id);
     
     // Get device metadata
-    let metadata = match state.db.get_device_metadata(&tenant_id, &device_id) {
+    let metadata = match state.db.get_device_metadata(&tenant_id, &device_id).await {
         Ok(Some(metadata)) => metadata,
         Ok(None) => return Err(AppError::NotFound(format!(
             "Device metadata not found for tenant: {} and device: {}",
@@ -340,7 +339,7 @@ pub async fn get_device_info_handler(
     };
     
     // Try to get the shadow to extract last_updated
-    match state.db._get_shadow(&device_id, &shadow_name, &tenant_id) {
+    match state.db._get_shadow(&device_id, &shadow_name, &tenant_id).await {
         Ok(shadow) => {
             last_shadow_update = Some(shadow.get_last_updated());
         },
@@ -369,7 +368,7 @@ pub async fn get_device_metadata_handler(
 ) -> Result<Json<DeviceMetadata>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
     
-    match state.db.get_device_metadata(&tenant_id, &device_id) {
+    match state.db.get_device_metadata(&tenant_id, &device_id).await {
         Ok(Some(metadata)) => Ok(Json(metadata)),
         Ok(None) => Err(AppError::NotFound(format!(
             "Device metadata not found for tenant: {} and device: {}",
@@ -387,7 +386,7 @@ pub async fn list_devices_handler(
 ) -> Result<Json<Vec<String>>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
     
-    match state.db.list_devices(&tenant_id) {
+    match state.db.list_devices(&tenant_id).await {
         Ok(devices) =>{
             // Return a list of device IDs
             // Convert the DeviceMetadata objects to just their device IDs
@@ -406,7 +405,7 @@ pub async fn delete_device_metadata_handler(
     State(state): State<AppState>,
 ) -> Result<Json<()>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
-    match state.db.delete_device_metadata(&tenant_id, &device_id) {
+    match state.db.delete_device_metadata(&tenant_id, &device_id).await {
         Ok(_) => Ok(Json(())),
         Err(e) => Err(AppError::DatabaseError(e)),
     }

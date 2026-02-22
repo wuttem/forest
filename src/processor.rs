@@ -1,5 +1,6 @@
 use crate::db::DB;
 use crate::mqtt::{ClientStatus, MqttError, MqttMessage, MqttSender};
+use rumqttd::AdminLink;
 use crate::server::ConnectionSet;
 use crate::shadow::{Shadow, StateUpdateDocument};
 use crate::models::{ShadowName, TenantId};
@@ -59,7 +60,6 @@ pub struct ProcessorState {
 pub struct Processor {
     pub db: Arc<DB>,
     pub mqtt_sender: MqttSender,
-    pub mqtt_receiver: flume::Receiver<MqttMessage>,
 }
 
 impl Processor {
@@ -102,11 +102,11 @@ pub fn send_delta_to_mqtt(
     }
 }
 
-fn process_update_document(
+async fn process_update_document(
     update_doc: &StateUpdateDocument,
     state: &ProcessorState,
 ) -> Result<(), ProcessorError> {
-    let shadow = state.db._upsert_shadow(update_doc)?;
+    let shadow = state.db._upsert_shadow(update_doc).await?;
     let delta_sent = send_delta_to_mqtt(
         &shadow,
         &state.mqtt_sender,
@@ -188,7 +188,7 @@ async fn handle_shadow_update(
         if let Ok(update_doc) =
             StateUpdateDocument::from_nested_json(&json_str, device_id, shadow_name, tenant_id)
         {
-            process_update_document(&update_doc, &state)?;
+            process_update_document(&update_doc, &state).await?;
         } else {
             return Err(ProcessorError::InvalidShadowUpdate(
                 "Failed to parse JSON".to_string(),
@@ -220,7 +220,7 @@ async fn handle_metric_extraction(
     };
 
     // get data config from db
-    let maybe_config = state.db.get_data_config(tenant_id, Some(device_id))?;
+    let maybe_config = state.db.get_data_config(tenant_id, Some(device_id)).await?;
     let metrics = match maybe_config {
         Some(data_config) => data_config.extract_metrics_from_json(json),
         None => return Ok(()),
@@ -232,7 +232,8 @@ async fn handle_metric_extraction(
     for (metric_name, metric_value) in metrics {
         let res = state
             .db
-            .put_metric(tenant_id, device_id, &metric_name, metric_value);
+            .put_metric(tenant_id, device_id, &metric_name, metric_value)
+            .await;
         match res {
             Ok(_) => {
                 counter += 1;
@@ -302,15 +303,23 @@ async fn handle_message(msg: MqttMessage, state: ProcessorState) {
     }
 }
 
-async fn run_stream_worker(mqtt_receiver: flume::Receiver<MqttMessage>, state: ProcessorState) {
-    let strm = mqtt_receiver.into_stream();
-    strm.for_each_concurrent(50, |msg| {
-        let state = state.clone();
-        async move {
-            let _ = handle_message(msg, state).await;
+async fn run_stream_worker(mut admin_link: AdminLink, state: ProcessorState) {
+    while let Ok(Some((publish, client_info))) = admin_link.recv().await {
+        if let Ok(topic) = std::str::from_utf8(&publish.topic) {
+            let msg = MqttMessage {
+                topic: topic.to_string(),
+                payload: publish.payload.to_vec(),
+            };
+            
+            // NOTE: client_info could be passed to handle_message if needed in the future
+            let _ = client_info.client_id;
+            
+            let state = state.clone();
+            tokio::spawn(async move {
+                let _ = handle_message(msg, state).await;
+            });
         }
-    })
-    .await;
+    }
 }
 
 async fn connection_monitor(
@@ -332,7 +341,7 @@ async fn connection_monitor(
 pub async fn start_processor(
     db: Arc<DB>,
     mqtt_sender: MqttSender,
-    mqtt_receiver: flume::Receiver<MqttMessage>,
+    admin_link: AdminLink,
     connection_monitor_rx: Receiver<ClientStatus>,
     connected_clients: Arc<ConnectionSet>,
     config: ProcessorConfig,
@@ -340,21 +349,19 @@ pub async fn start_processor(
     let mut processor = Processor {
         db: db,
         mqtt_sender: mqtt_sender,
-        mqtt_receiver: mqtt_receiver,
     };
 
     let config = Arc::new(config);
 
     //  run stream worker
     tokio::spawn({
-        let receiver = processor.mqtt_receiver.clone();
         let state = ProcessorState {
             db: processor.db.clone(),
             mqtt_sender: processor.mqtt_sender.clone(),
             config: config.clone(),
         };
         async move {
-            let _ = run_stream_worker(receiver, state)
+            let _ = run_stream_worker(admin_link, state)
                 .instrument(debug_span!("ShadowUpdateWorker"))
                 .await;
         }

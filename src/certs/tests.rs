@@ -105,16 +105,16 @@ fn test_setup_reuses_existing_key() {
     // First create a server cert with just one hostname
     cert_manager.create_server_cert_with_hostnames("example.com", &["example.com"]).unwrap();
 
-    // Get the modification time of the key file
+    // Read the contents of the key file
     let key_path = temp_dir.path().join(SERVER_KEY_FILENAME);
-    let original_key_modified = fs::metadata(&key_path).unwrap().modified().unwrap();
-    
+    let original_key_content = fs::read_to_string(&key_path).unwrap();
+
     // Now call setup with an additional hostname
     cert_manager.setup("example.com", &["example.com", "www.example.com"]).unwrap();
     
-    // The key file should not have changed (same modification time)
-    let new_key_modified = fs::metadata(&key_path).unwrap().modified().unwrap();
-    assert_eq!(original_key_modified, new_key_modified);
+    // The key file should not have changed (same contents)
+    let new_key_content = fs::read_to_string(&key_path).unwrap();
+    assert_eq!(original_key_content, new_key_content);
     
     // But the certificate should now include both hostnames
     assert!(cert_manager.is_server_cert_valid("example.com", &["example.com", "www.example.com"]).unwrap());

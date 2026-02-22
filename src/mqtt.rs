@@ -2,7 +2,7 @@ pub use rumqttd::local::{LinkError, LinkRx, LinkTx};
 use rumqttd::meters::MetersLink;
 use rumqttd::Meter::Router;
 use rumqttd::{alerts::AlertsLink, ConnectionId};
-pub use rumqttd::{Alert, AuthHandler, Broker, ClientStatus, Config, Meter, Notification};
+pub use rumqttd::{Alert, AuthHandler, Broker, ClientStatus, Config, Meter, Notification, ClientInfo, AdminLink};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -194,7 +194,7 @@ pub struct MqttServerMetrics {
 
 pub struct MqttServer {
     pub mqtt: MqttSender,
-    // handlers: Arc<Mutex<MessageHandlers>>,
+    pub admin: Option<AdminLink>,
     receiver: flume::Receiver<MqttMessage>,
     pub cancel_token: CancellationToken,
     pub metrics: Arc<MqttServerMetrics>,
@@ -408,16 +408,20 @@ async fn auth(
     _password: String,
     common_name: String,
     organization: String,
-) -> bool {
-    let _span = info_span!("authentication", client_id = %client_id, username = %username, common_name = %common_name, organization = %organization).entered();
+    ca_path: Option<String>,
+) -> Result<Option<ClientInfo>, String> {
+    let _span = info_span!("authentication", client_id = %client_id, username = %username, common_name = %common_name, organization = %organization, ca_path = ?ca_path).entered();
     // we can do auth on username and password or on common_name (from client certificate)
     // if we have a common_name we need to check that it matches the client_id
     if !common_name.is_empty() && client_id != common_name {
         warn!("Client ID does not match certificate common name");
-        return false;
+        return Ok(None);
     }
 
-    true
+    Ok(Some(ClientInfo {
+        client_id,
+        tenant: None, // Or however you determine tenant ID (e.g. from organization)
+    }))
 }
 
 pub async fn start_broker(mqtt_config: Option<MqttConfig>) -> MqttServer {
@@ -493,6 +497,7 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>) -> MqttServer {
 
     let (link_tx, link_rx, router_tx, connection_monitor_tx, connection_id) =
         broker.get_broker_links().unwrap();
+    let admin_link = broker.admin_link("forest_admin").unwrap();
     let alerts = broker.alerts().unwrap();
     let metrics = broker.meters().unwrap();
     let (tx, rx) = flume::bounded::<MqttCommand>(400);
@@ -559,6 +564,7 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>) -> MqttServer {
 
     let mqtt_server = MqttServer {
         mqtt: sender.clone(),
+        admin: Some(admin_link),
         receiver: message_receiver,
         cancel_token: cancel_token.clone(),
         metrics: metrics,
