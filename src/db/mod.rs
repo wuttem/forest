@@ -48,7 +48,6 @@ impl From<Box<bincode::ErrorKind>> for DatabaseError {
 pub struct DatabaseConfig {
     pub path: String, // e.g., "sqlite:./test.db" or "postgres://user:pass@localhost/db"
     pub create_if_missing: bool,
-    pub backup_path: String,
 }
 
 impl Default for DatabaseConfig {
@@ -56,14 +55,12 @@ impl Default for DatabaseConfig {
         DatabaseConfig {
             path: String::from("sqlite://.forest.db?mode=rwc"),
             create_if_missing: true,
-            backup_path: String::from("./.forest_backup/"),
         }
     }
 }
 
 pub struct DB {
     pub path: String,
-    pub backup_path: String,
     pub pool: Option<Arc<AnyPool>>,
 }
 
@@ -84,24 +81,32 @@ impl DB {
         // Ensure tables exist
         let mut conn = pool.acquire().await?;
         
+        let is_postgres = config.path.starts_with("postgres");
+        let blob_type = if is_postgres { "BYTEA" } else { "BLOB" };
+        let serial_type = if is_postgres { "SERIAL" } else { "INTEGER" };
+
         // Create table for general Key-Value (similar to rocksdb)
-        sqlx::query(
+        let kv_query = format!(
             "CREATE TABLE IF NOT EXISTS kv_store (
                 key TEXT PRIMARY KEY,
-                value BLOB NOT NULL
-            )"
-        ).execute(&mut *conn).await?;
+                value {} NOT NULL
+            )",
+            blob_type
+        );
+        sqlx::query(&kv_query).execute(&mut *conn).await?;
 
         // Create table for Timeseries Buckets
-        sqlx::query(
+        let ts_query = format!(
             "CREATE TABLE IF NOT EXISTS timeseries_buckets (
-                id INTEGER PRIMARY KEY,
+                id {} PRIMARY KEY,
                 key TEXT NOT NULL,
                 bucket_timestamp BIGINT NOT NULL,
-                data BLOB NOT NULL,
+                data {} NOT NULL,
                 UNIQUE(key, bucket_timestamp)
-            )"
-        ).execute(&mut *conn).await?;
+            )",
+            serial_type, blob_type
+        );
+        sqlx::query(&ts_query).execute(&mut *conn).await?;
 
         // Create table for Shadows
         sqlx::query(
@@ -136,7 +141,6 @@ impl DB {
 
         Ok(DB {
             path: config.path.to_owned(),
-            backup_path: config.backup_path.to_owned(),
             pool: Some(Arc::new(pool)),
         })
     }
@@ -439,6 +443,26 @@ impl DB {
         }
     }
 
+    pub async fn _delete_shadow(
+        &self,
+        device_id: &str,
+        shadow_name: &ShadowName,
+        tenant_id: &TenantId,
+    ) -> Result<(), DatabaseError> {
+        if let Some(pool) = &self.pool {
+            let t_id = tenant_id.to_string();
+            let s_name = shadow_name.as_str().to_string();
+            sqlx::query("DELETE FROM shadows WHERE tenant_id = $1 AND device_id = $2 AND shadow_name = $3")
+                .bind(&t_id)
+                .bind(device_id)
+                .bind(&s_name)
+                .execute(&**pool).await?;
+            Ok(())
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
+    }
+
     pub async fn flush(&self) -> Result<(), DatabaseError> {
         // No explicit flush needed for sqlx Any Pool usually
         Ok(())
@@ -605,11 +629,7 @@ impl DB {
         }
     }
 
-    pub async fn create_backup(&self) -> Result<String, DatabaseError> {
-        // Backups in SQLx depend on the underlying database. For now, warn.
-        warn!("create_backup is mock implementation for SQLx backend");
-        Ok(format!("Backup requested at {}", self.backup_path))
-    }
+
 
     pub async fn put_device_metadata(&self, metadata: &DeviceMetadata) -> Result<(), DatabaseError> {
         if let Some(pool) = &self.pool {

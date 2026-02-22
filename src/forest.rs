@@ -8,7 +8,6 @@ use forest::db::DB;
 use forest::models::TenantId;
 use forest::server::start_server;
 use forest::cli::{Cli, Commands};
-use forest::api::client::create_backup;
 use forest::api::services::create_device as create_device_api;
 use forest::certs::CertificateManager;
 use tokio::runtime::Runtime;
@@ -86,9 +85,7 @@ fn main() {
         Commands::Version => {
             println!("Forest Version: {}", env!("CARGO_PKG_VERSION"));
         },
-        Commands::CreateBackup => {
-            run_create_backup(rt, config);
-        },
+
         Commands::CreateDevice { device_id } => {
             create_device(rt, &device_id, config);
         },
@@ -97,35 +94,23 @@ fn main() {
 
 fn run_server(rt: Runtime, config: ForestConfig) {
     setup_server_certs(&config);
-    println!("Starting server");
     rt.block_on(async {
-        let cancel_token = start_server(&config).await;
+        let (cancel_token, server_handle) = start_server(&config).await;
         tokio::select! {
             _ = cancel_token.cancelled() => {
-                tracing::warn!("Server exited");
-                return;
+                tracing::warn!("Server exited internally");
             },
-            _ = tokio::signal::ctrl_c() => {},
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received Ctrl-C, shutting down gracefully...");
+                cancel_token.cancel();
+            },
         };
+        let _ = server_handle.await;
+        tracing::info!("Shutdown complete");
     });
 }
 
-fn run_create_backup(rt: Runtime, config: ForestConfig) {
-    let api_base_url = format!("http://{}", config.bind_api);
-    rt.block_on(
-        async {
-            let result = create_backup(&api_base_url).await;
-            match result {
-                Ok(msg) => {
-                    tracing::info!("Backup created: {}", msg);
-                },
-                Err(e) => {
-                    tracing::error!("Error creating backup: {}", e);
-                },
-            }
-        }
-    )
-}
+
 
 fn get_certificate_manager(config: &ForestConfig) -> CertificateManager {
     let tenant_id = config.tenant_id.clone();

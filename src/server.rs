@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 pub type ConnectionSet = dashmap::DashSet<String>;
 
-pub async fn start_server(config: &ForestConfig) -> CancellationToken {
+pub async fn start_server(config: &ForestConfig) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let db_path = PathBuf::from(&config.database.path);
 
     let maybe_db = DB::open_default(db_path.to_str().unwrap()).await;
@@ -42,9 +42,9 @@ pub async fn start_server(config: &ForestConfig) -> CancellationToken {
         config.processor.clone(),
     )
     .await;
-    let _processor = {
+    let (_processor, processor_handle) = {
         match maybe_processor {
-            Ok(processor) => processor,
+            Ok(tuple) => tuple,
             Err(e) => {
                 panic!("Failed to start processor: {:?}", e);
             }
@@ -54,7 +54,7 @@ pub async fn start_server(config: &ForestConfig) -> CancellationToken {
     let api_db = db.clone();
     let mqtt_sender = mqtt_broker.mqtt.clone();
     let mqtt_metrics = mqtt_broker.metrics.clone();
-    let _api_server_cancel_token = start_api_server(
+    let (_api_server_cancel_token, api_handle) = start_api_server(
         &config.bind_api,
         api_db,
         Some(mqtt_sender),
@@ -66,7 +66,7 @@ pub async fn start_server(config: &ForestConfig) -> CancellationToken {
 
     let server_cancel_token = _broker_cancel_token.clone();
 
-    tokio::spawn(async move {
+    let combined_handle = tokio::spawn(async move {
         tokio::select! {
             _ = _broker_cancel_token.cancelled() => {
                 warn!("Broker cancelled");
@@ -77,7 +77,8 @@ pub async fn start_server(config: &ForestConfig) -> CancellationToken {
                 _broker_cancel_token.cancel();
             }
         }
+        let _ = tokio::join!(processor_handle, api_handle);
     });
 
-    server_cancel_token
+    (server_cancel_token, combined_handle)
 }

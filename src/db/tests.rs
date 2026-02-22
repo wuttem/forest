@@ -11,8 +11,6 @@ async fn setup_db() -> (DB, TempDir) {
     let mut config = DatabaseConfig::default();
     let db_id = Uuid::new_v4().simple();
     config.path = format!("sqlite:file:memdb_{}?mode=memory&cache=shared", db_id);
-    let backup_path = temp_dir.path().join("backup");
-    config.backup_path = backup_path.to_str().unwrap().to_string();
 
     let db = DB::open(&config).await.unwrap();
     (db, temp_dir)
@@ -47,7 +45,6 @@ async fn test_put_get_multiple_buckets() {
 async fn test_no_db_connection_ts() {
     let db = DB {
         path: String::from("path"),
-        backup_path: String::from("backup"),
         pool: None,
     };
     let ts = FloatTimeSeries::new();
@@ -114,7 +111,6 @@ async fn test_get_timeseries_last() {
     // Test no DB connection
     let db_no_conn = DB {
         path: "path".to_string(),
-        backup_path: "backup".to_string(),
         pool: None,
     };
     assert!(matches!(

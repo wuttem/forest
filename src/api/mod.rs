@@ -31,7 +31,7 @@ pub async fn start_api_server(
     mqtt_metrics: Arc<MqttServerMetrics>,
     connected_clients: Arc<ConnectionSet>,
     config: &ForestConfig,
-) -> CancellationToken {
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let cert_manager = Arc::new(CertificateManager::new(&config.cert_dir, config.tenant_id.clone()).unwrap());
     let state = AppState {
         db: db.clone(),
@@ -44,9 +44,9 @@ pub async fn start_api_server(
     let app = get_routes(state);
     let listener = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
     let cancel_token = CancellationToken::new();
-
     let server_cancel_token = cancel_token.clone();
-    let _server_handle = tokio::spawn(async move {
+
+    let server_handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 _ = server_cancel_token.cancelled().await;
@@ -55,5 +55,5 @@ pub async fn start_api_server(
             .unwrap();
     });
 
-    cancel_token
+    (cancel_token, server_handle)
 }

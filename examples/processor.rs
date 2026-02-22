@@ -18,11 +18,12 @@ async fn main() {
 
     let config = ForestConfig::default();
 
-    let cancel_token = start_server(&config).await;
+    let (cancel_token, server_handle) = start_server(&config).await;
 
     tokio::select! {
         _ = cancel_token.cancelled() => {
             tracing::warn!("Server cancelled");
+            let _ = server_handle.await; // Added this line
             return;
         },
         _ = tokio::signal::ctrl_c() => {},

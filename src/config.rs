@@ -48,7 +48,6 @@ impl ForestConfig {
             .set_default("processor.shadow_topic_prefix", default_config.processor.shadow_topic_prefix)?
             .set_default("database.create_if_missing", default_config.database.create_if_missing)?
             .set_default("database.path", default_config.database.path)?
-            .set_default("database.backup_path", default_config.database.backup_path)?
             .set_default("bind_api", default_config.bind_api)?
             .set_default("tenant_id", default_config.tenant_id)?
             // .set_default("cert_dir", default_config.cert_dir)?

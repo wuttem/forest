@@ -12,3 +12,9 @@ target/
 **/.rocksdb/
 **/.rocksdb_backup/
 **/.local/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+.forest.db

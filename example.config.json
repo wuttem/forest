@@ -11,7 +11,8 @@
         "shadow_topic_prefix": "things/"
     },
     "database": {
-        "path": "./.rocksdb/",
+        "path": "sqlite://.forest.db?mode=rwc",
+        "_path_postgres_example": "postgres://user:password@localhost/forest_db",
         "create_if_missing": true
     },
     "bind_api": "127.0.0.1:8080",

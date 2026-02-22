@@ -32,6 +32,6 @@ async fn test_start_processor() {
     )
     .await;
     assert!(result.is_ok(), "start_processor should return Ok");
-    let processor = result.unwrap();
+    let (processor, _handle) = result.unwrap();
     assert!(processor.db.pool.is_some(), "DB should be open");
 }

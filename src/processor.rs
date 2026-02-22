@@ -345,7 +345,7 @@ pub async fn start_processor(
     connection_monitor_rx: Receiver<ClientStatus>,
     connected_clients: Arc<ConnectionSet>,
     config: ProcessorConfig,
-) -> Result<Processor, ProcessorError> {
+) -> Result<(Processor, tokio::task::JoinHandle<()>), ProcessorError> {
     let mut processor = Processor {
         db: db,
         mqtt_sender: mqtt_sender,
@@ -354,7 +354,7 @@ pub async fn start_processor(
     let config = Arc::new(config);
 
     //  run stream worker
-    tokio::spawn({
+    let h1 = tokio::spawn({
         let state = ProcessorState {
             db: processor.db.clone(),
             mqtt_sender: processor.mqtt_sender.clone(),
@@ -368,7 +368,7 @@ pub async fn start_processor(
     });
 
     // run connection monitor
-    tokio::spawn({
+    let h2 = tokio::spawn({
         async move {
             let _ = connection_monitor(connection_monitor_rx, connected_clients)
                 .instrument(debug_span!("ConnectionMonitor"))
@@ -376,12 +376,16 @@ pub async fn start_processor(
         }
     });
 
+    let combined_handle = tokio::spawn(async move {
+        let _ = tokio::join!(h1, h2);
+    });
+
     let topic_patterns = vec![
         format!("{}+/shadow/update", config.shadow_topic_prefix),
         format!("{}+/shadow/+/update", config.shadow_topic_prefix),
     ];
     processor.subscribe_shadow_updates(topic_patterns).await?;
-    Ok(processor)
+    Ok((processor, combined_handle))
 }
 
 #[cfg(test)]

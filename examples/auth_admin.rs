@@ -21,8 +21,9 @@ async fn main() {
     println!("MQTT Broker listening on {}", config.mqtt.bind_v3);
     
     // Start the server with the setup
-    let cancel_token = start_server(&config).await;
+    let (cancel_token, server_handle) = start_server(&config).await;
     
     // Wait for the server to finish
     cancel_token.cancelled().await;
+    let _ = server_handle.await;
 }

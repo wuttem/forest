@@ -111,6 +111,23 @@ pub async fn update_shadow_handler(
     Ok(Json(shadow))
 }
 
+pub async fn delete_shadow_handler(
+    Path((_tenant_id, device_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<()>, AppError> {
+    let tenant_id = TenantId::Default;
+    let maybe_shadow_name = params.get("name");
+    let shadow_name = match maybe_shadow_name {
+        Some(name) => ShadowName::from_str(name),
+        None => ShadowName::Default,
+    };
+    match state.db._delete_shadow(&device_id, &shadow_name, &tenant_id).await {
+        Ok(_) => Ok(Json(())),
+        Err(e) => Err(AppError::DatabaseError(e)),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct TimeseriesQuery {
     pub start: u64,
@@ -259,23 +276,7 @@ pub async fn list_connections_handler(
     Ok(Json(connections))
 }
 
-pub async fn backup_database_handler(
-    State(state): State<AppState>,
-) -> Result<Json<String>, AppError> {
-    let db = state.db.clone();
 
-    // Spawn the backup task and await its result
-    let result = tokio::spawn(async move {
-        db.create_backup().await
-    }).await
-    .map_err(|e| AppError::InternalServerError(format!("Backup task failed: {}", e)))?;
-
-    // Handle the backup result
-    match result {
-        Ok(message) => Ok(Json(message)),
-        Err(e) => Err(AppError::DatabaseError(e)),
-    }
-}
 
 #[derive(Deserialize)]
 pub struct PutDeviceBody {

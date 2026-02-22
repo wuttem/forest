@@ -36,8 +36,6 @@ pub enum Commands {
         bind_mqtt_v5: Option<String>,
     },
     Version,
-    #[command(name="backup")]
-    CreateBackup,
     #[command(name="create-device")]
     CreateDevice {
         /// Device ID
