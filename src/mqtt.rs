@@ -1,23 +1,25 @@
+use crate::db::DB;
+use crate::models::{Tenant, TenantId};
 pub use rumqttd::local::{LinkError, LinkRx, LinkTx};
 use rumqttd::meters::MetersLink;
 use rumqttd::Meter::Router;
 use rumqttd::{alerts::AlertsLink, ConnectionId};
-pub use rumqttd::{Alert, AuthHandler, Broker, ClientStatus, Config, Meter, Notification, ClientInfo, AdminLink};
+pub use rumqttd::{
+    AdminLink, Alert, AuthHandler, Broker, ClientInfo, ClientStatus, Config, Meter, Notification,
+};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use std::{future::Future, sync::atomic::AtomicBool};
 use tokio::select;
 use tokio::sync::broadcast::{Receiver, Sender};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info_span, warn, info};
-use crate::models::{TenantId, Tenant};
-use crate::db::DB;
-use std::sync::OnceLock;
+use tracing::{debug, error, info, info_span, warn};
 
 static GLOBAL_DB: OnceLock<Arc<DB>> = OnceLock::new();
 
@@ -416,7 +418,7 @@ async fn auth(
     ca_path: Option<String>,
 ) -> Result<Option<ClientInfo>, String> {
     info!("authentication request: client_id={} username={} common_name={} organization={} ca_path={:?}", client_id, username, common_name, organization, ca_path);
-    
+
     let db = match GLOBAL_DB.get() {
         Some(db) => db,
         None => {
@@ -429,16 +431,22 @@ async fn auth(
     // Find device metadata to get tenant
     // Note: since the device id is usually unique across tenants or formatted as <tenant>-<device>,
     // we might need to assume a way to find it. In forest, device lists are partitioned by tenant.
-    // However, if we don't know the tenant, we'd have to scan all, but typically the username might contain the tenant, 
-    // or we can allow the device metadata to be queried. 
-    // Wait, let's look at the models. We could require username to be tenant_id:username or similar, but for now 
-    // we'll fetch the first device matching device_id traversing tenants, OR we can require tenant to be passed as organization. 
+    // However, if we don't know the tenant, we'd have to scan all, but typically the username might contain the tenant,
+    // or we can allow the device metadata to be queried.
+    // Wait, let's look at the models. We could require username to be tenant_id:username or similar, but for now
+    // we'll fetch the first device matching device_id traversing tenants, OR we can require tenant to be passed as organization.
     // For now, let's assume TenantId::Default or from organization.
-    let tenant_str = if !organization.is_empty() { &organization } else { "default" };
+    let tenant_str = if !organization.is_empty() {
+        &organization
+    } else {
+        "default"
+    };
     let tenant_id = TenantId::from_str(tenant_str);
 
     // Fetch tenant config
-    let tenant = db.get_tenant(&tenant_id).await
+    let tenant = db
+        .get_tenant(&tenant_id)
+        .await
         .map_err(|e| format!("DB Error: {}", e))?
         .unwrap_or_else(|| Tenant::new(&tenant_id));
 
@@ -464,13 +472,15 @@ async fn auth(
     // Check passwords
     if !username.is_empty() {
         if !auth_config.allow_passwords {
-             warn!("Passwords are not allowed for this tenant");
-             return Ok(None);
+            warn!("Passwords are not allowed for this tenant");
+            return Ok(None);
         }
-        let is_valid = db.verify_device_password(&tenant_id, &client_id, &username, &password).await
+        let is_valid = db
+            .verify_device_password(&tenant_id, &client_id, &username, &password)
+            .await
             .map_err(|e| format!("DB Error: {}", e))?;
         if is_valid {
-             return Ok(Some(ClientInfo {
+            return Ok(Some(ClientInfo {
                 client_id,
                 tenant: Some(tenant_id.to_string()),
             }));
@@ -548,8 +558,7 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
             });
         }
         ws_server.set_auth_handler(auth);
-    }
-    else {
+    } else {
         let ws = config.ws.as_mut();
         if let Some(ws) = ws {
             ws.remove("1");

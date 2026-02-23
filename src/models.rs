@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use serde::{Serialize,Deserialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DefaultString {
@@ -148,7 +148,7 @@ impl DeviceMetadata {
             created_at: chrono::Utc::now().timestamp() as u64,
         }
     }
-    
+
     pub fn with_credentials(mut self, certificate: String, key: String) -> Self {
         self.certificate = Some(certificate);
         self.key = Some(key);

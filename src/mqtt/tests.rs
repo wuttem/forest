@@ -1,11 +1,11 @@
 use super::*;
-use std::time::Duration;
+use crate::db::{DatabaseConfig, DB};
+use crate::models::{AuthConfig, DeviceCredential, Tenant, TenantId};
 use std::sync::Arc;
-use tokio::time::sleep;
-use crate::db::{DB, DatabaseConfig};
-use crate::models::{TenantId, Tenant, AuthConfig, DeviceCredential};
-use uuid::Uuid;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio::time::sleep;
+use uuid::Uuid;
 
 async fn setup_db() -> (Arc<DB>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
@@ -84,7 +84,7 @@ async fn test_publish_subscribe() {
 #[tokio::test]
 async fn test_auth_handler() {
     let (db, _temp) = setup_db().await;
-    
+
     // Set global DB manually for testing since we aren't calling start_broker
     let _ = GLOBAL_DB.set(db.clone());
 
@@ -92,7 +92,7 @@ async fn test_auth_handler() {
     let mut auth_config = AuthConfig::default();
     auth_config.allow_passwords = true;
     auth_config.allow_certificates = true;
-    
+
     let tenant = Tenant::new(&tenant_id).with_auth_config(auth_config);
     db.put_tenant(&tenant).await.unwrap();
 
@@ -116,7 +116,8 @@ async fn test_auth_handler() {
         "".to_string(),
         "test_tenant".to_string(),
         None,
-    ).await;
+    )
+    .await;
     let client_info = result.unwrap().unwrap();
     assert_eq!(client_info.client_id, "device1");
     assert_eq!(client_info.tenant.unwrap(), "test_tenant");
@@ -129,7 +130,8 @@ async fn test_auth_handler() {
         "".to_string(),
         "test_tenant".to_string(),
         None,
-    ).await;
+    )
+    .await;
     assert!(result.unwrap().is_none());
 
     // Test invalid username
@@ -140,7 +142,8 @@ async fn test_auth_handler() {
         "".to_string(),
         "test_tenant".to_string(),
         None,
-    ).await;
+    )
+    .await;
     assert!(result.unwrap().is_none());
 
     // Test valid cert auth
@@ -151,7 +154,8 @@ async fn test_auth_handler() {
         "device_cert_1".to_string(),
         "test_tenant".to_string(),
         None,
-    ).await;
+    )
+    .await;
     let client_info = result.unwrap().unwrap();
     assert_eq!(client_info.client_id, "device_cert_1");
 
@@ -163,7 +167,8 @@ async fn test_auth_handler() {
         "device_cert_2".to_string(),
         "test_tenant".to_string(),
         None,
-    ).await;
+    )
+    .await;
     assert!(result.unwrap().is_none());
 
     // Test passwords disabled
@@ -178,7 +183,7 @@ async fn test_auth_handler() {
         "".to_string(),
         "no_password_tenant".to_string(),
         None,
-    ).await;
+    )
+    .await;
     assert!(result.unwrap().is_none());
 }
-

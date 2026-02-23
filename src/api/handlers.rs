@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
 use crate::api::error::AppError;
-use crate::api::AppState;
 use crate::api::services::create_device;
+use crate::api::AppState;
+use crate::certs::CertificateData;
 use crate::dataconfig::{DataConfig, DataConfigEntry};
 use crate::db::DatabaseError;
+use crate::models::{AuthConfig, DeviceCredential, DeviceInformation, DeviceMetadata, Tenant};
+use crate::models::{ShadowName, TenantId};
 use crate::processor::send_delta_to_mqtt;
 use crate::shadow::{NestedStateDocument, Shadow, StateUpdateDocument};
-use crate::models::{DeviceInformation, DeviceMetadata, Tenant, AuthConfig, DeviceCredential};
-use crate::models::{ShadowName, TenantId};
 use crate::timeseries::{TimeSeriesConversions, TimeSeriesModel};
-use crate::certs::CertificateData;
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -40,7 +40,7 @@ pub async fn home_handler(State(state): State<AppState>) -> Result<Json<HomeResp
         .messages_dropped
         .load(std::sync::atomic::Ordering::Relaxed);
     let forest_version = env!("CARGO_PKG_VERSION").to_string();
-    
+
     let response = HomeResponse {
         connected_devices,
         mqtt_messages_received: mqtt_received,
@@ -67,7 +67,10 @@ pub async fn get_shadow_handler(
         Some(name) => ShadowName::from_str(name),
         None => ShadowName::Default,
     };
-    match db._get_shadow(&device_id, &shadow_name, &TenantId::Default).await {
+    match db
+        ._get_shadow(&device_id, &shadow_name, &TenantId::Default)
+        .await
+    {
         Ok(doc) => Ok(Json(doc)),
         Err(DatabaseError::NotFoundError(_)) => Err(AppError::NotFound(format!(
             "Shadow ({}) not found for device: {}",
@@ -123,7 +126,11 @@ pub async fn delete_shadow_handler(
         Some(name) => ShadowName::from_str(name),
         None => ShadowName::Default,
     };
-    match state.db._delete_shadow(&device_id, &shadow_name, &tenant_id).await {
+    match state
+        .db
+        ._delete_shadow(&device_id, &shadow_name, &tenant_id)
+        .await
+    {
         Ok(_) => Ok(Json(())),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -142,7 +149,10 @@ pub async fn get_timeseries_handler(
 ) -> Result<Json<TimeSeriesModel>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::Default;
-    let timeseries = match db.get_metric(&tenant_id, &device_id, &metric, range.start, range.end).await {
+    let timeseries = match db
+        .get_metric(&tenant_id, &device_id, &metric, range.start, range.end)
+        .await
+    {
         Ok(ts) => ts,
         Err(DatabaseError::NotFoundError(_)) => {
             return Err(AppError::NotFound(format!(
@@ -169,7 +179,10 @@ pub async fn get_last_timeseries_handler(
     let tenant_id = TenantId::Default;
     let limit = query.limit.unwrap_or(1);
 
-    let timeseries = match db.get_last_metric(&tenant_id, &device_id, &metric, limit).await {
+    let timeseries = match db
+        .get_last_metric(&tenant_id, &device_id, &metric, limit)
+        .await
+    {
         Ok(ts) => ts,
         Err(DatabaseError::NotFoundError(_)) => {
             return Err(AppError::NotFound(format!(
@@ -183,6 +196,43 @@ pub async fn get_last_timeseries_handler(
     Ok(Json(timeseries.to_model(&device_id, &metric)))
 }
 
+pub async fn post_telemetry_handler(
+    Path((tenant_id, device_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<()>, AppError> {
+    let tenant_id = TenantId::from_str(&tenant_id);
+    let db = &state.db;
+
+    let maybe_config = db
+        .get_data_config(&tenant_id, Some(&device_id))
+        .await
+        .map_err(AppError::DatabaseError)?;
+    let metrics = match maybe_config {
+        Some(data_config) => data_config.extract_metrics_from_json(payload),
+        None => {
+            return Err(AppError::NotFound(format!(
+                "No telemetry config found for device: {}",
+                device_id
+            )))
+        }
+    };
+
+    let mut counter = 0;
+    for (metric_name, metric_value) in metrics {
+        if let Err(e) = db
+            .put_metric(&tenant_id, &device_id, &metric_name, metric_value)
+            .await
+        {
+            return Err(AppError::DatabaseError(e));
+        }
+        counter += 1;
+    }
+
+    tracing::info!(%tenant_id, device_id, counter, "Processed metrics via HTTP");
+    Ok(Json(()))
+}
+
 pub async fn store_device_config_handler(
     Path((tenant_id, device_prefix)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -190,7 +240,10 @@ pub async fn store_device_config_handler(
 ) -> Result<Json<DataConfig>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.store_device_data_config(&tenant_id, &device_prefix, &config).await {
+    match db
+        .store_device_data_config(&tenant_id, &device_prefix, &config)
+        .await
+    {
         Ok(_) => Ok(Json(config)),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -249,7 +302,10 @@ pub async fn delete_config_handler(
 ) -> Result<Json<()>, AppError> {
     let db = &state.db;
     let tenant_id = TenantId::from_str(&tenant_id);
-    match db.delete_data_config(&tenant_id, device_prefix.as_deref()).await {
+    match db
+        .delete_data_config(&tenant_id, device_prefix.as_deref())
+        .await
+    {
         Ok(_) => Ok(Json(())),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -276,8 +332,6 @@ pub async fn list_connections_handler(
     let connections = device_iter.map(|x| (*x).to_owned()).collect();
     Ok(Json(connections))
 }
-
-
 
 #[derive(Deserialize)]
 pub struct PutDeviceBody {
@@ -316,20 +370,22 @@ pub async fn get_device_info_handler(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<DeviceInformation>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
-    
+
     // Get device metadata
     let metadata = match state.db.get_device_metadata(&tenant_id, &device_id).await {
         Ok(Some(metadata)) => metadata,
-        Ok(None) => return Err(AppError::NotFound(format!(
-            "Device metadata not found for tenant: {} and device: {}",
-            tenant_id, device_id
-        ))),
+        Ok(None) => {
+            return Err(AppError::NotFound(format!(
+                "Device metadata not found for tenant: {} and device: {}",
+                tenant_id, device_id
+            )))
+        }
         Err(e) => return Err(AppError::DatabaseError(e)),
     };
-    
+
     // Check connection status
     let connected = state.connected_clients.contains(&device_id);
-    
+
     // Get shadow last update time if requested
     let mut last_shadow_update = None;
 
@@ -339,18 +395,22 @@ pub async fn get_device_info_handler(
         Some(name) => ShadowName::from_str(name),
         None => ShadowName::Default,
     };
-    
+
     // Try to get the shadow to extract last_updated
-    match state.db._get_shadow(&device_id, &shadow_name, &tenant_id).await {
+    match state
+        .db
+        ._get_shadow(&device_id, &shadow_name, &tenant_id)
+        .await
+    {
         Ok(shadow) => {
             last_shadow_update = Some(shadow.get_last_updated());
-        },
+        }
         Err(DatabaseError::NotFoundError(_)) => {
             // No shadow found, leave last_shadow_update as None
-        },
+        }
         Err(e) => return Err(AppError::DatabaseError(e)),
     }
-    
+
     // Construct the DeviceInformation response
     let device_info = DeviceInformation {
         device_id: metadata.device_id,
@@ -359,7 +419,7 @@ pub async fn get_device_info_handler(
         connected,
         last_shadow_update,
     };
-    
+
     Ok(Json(device_info))
 }
 
@@ -369,7 +429,7 @@ pub async fn get_device_metadata_handler(
     State(state): State<AppState>,
 ) -> Result<Json<DeviceMetadata>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
-    
+
     match state.db.get_device_metadata(&tenant_id, &device_id).await {
         Ok(Some(metadata)) => Ok(Json(metadata)),
         Ok(None) => Err(AppError::NotFound(format!(
@@ -380,23 +440,23 @@ pub async fn get_device_metadata_handler(
     }
 }
 
-
 // Handler to list all devices for a tenant
 pub async fn list_devices_handler(
     Path(tenant_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<String>>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
-    
+
     match state.db.list_devices(&tenant_id).await {
-        Ok(devices) =>{
+        Ok(devices) => {
             // Return a list of device IDs
             // Convert the DeviceMetadata objects to just their device IDs
-            let device_ids = devices.into_iter()
+            let device_ids = devices
+                .into_iter()
                 .map(|metadata| metadata.device_id)
                 .collect();
             Ok(Json(device_ids))
-        },
+        }
         Err(e) => Err(AppError::DatabaseError(e)),
     }
 }
@@ -407,7 +467,11 @@ pub async fn delete_device_metadata_handler(
     State(state): State<AppState>,
 ) -> Result<Json<()>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id);
-    match state.db.delete_device_metadata(&tenant_id, &device_id).await {
+    match state
+        .db
+        .delete_device_metadata(&tenant_id, &device_id)
+        .await
+    {
         Ok(_) => Ok(Json(())),
         Err(e) => Err(AppError::DatabaseError(e)),
     }
@@ -450,10 +514,15 @@ pub async fn add_device_password_handler(
     Json(body): Json<AddPasswordBody>,
 ) -> Result<Json<()>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id_str);
-    
+
     let password_hash = match bcrypt::hash(&body.password_plaintext, bcrypt::DEFAULT_COST) {
         Ok(h) => h,
-        Err(e) => return Err(AppError::InternalServerError(format!("Hashing error: {}", e))),
+        Err(e) => {
+            return Err(AppError::InternalServerError(format!(
+                "Hashing error: {}",
+                e
+            )))
+        }
     };
 
     let credential = DeviceCredential {
@@ -476,8 +545,8 @@ pub async fn get_device_passwords_handler(
 ) -> Result<Json<Vec<String>>, AppError> {
     let tenant_id = TenantId::from_str(&tenant_id_str);
     match state.db.list_device_passwords(&tenant_id, &device_id).await {
-         Ok(usernames) => Ok(Json(usernames)),
-         Err(e) => Err(AppError::DatabaseError(e)),
+        Ok(usernames) => Ok(Json(usernames)),
+        Err(e) => Err(AppError::DatabaseError(e)),
     }
 }
 
@@ -487,17 +556,21 @@ pub async fn generate_server_ca_handler(
 ) -> Result<Json<()>, AppError> {
     match state.cert_manager.create_ca(None) {
         Ok(_) => Ok(Json(())),
-        Err(e) => Err(AppError::InternalServerError(format!("Failed to generate Server CA: {}", e))),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to generate Server CA: {}",
+            e
+        ))),
     }
 }
 
 // Get server CA
-pub async fn get_server_ca_handler(
-    State(state): State<AppState>,
-) -> Result<String, AppError> {
+pub async fn get_server_ca_handler(State(state): State<AppState>) -> Result<String, AppError> {
     match state.cert_manager.get_ca_cert_pem() {
         Ok(pem) => Ok(pem),
-        Err(e) => Err(AppError::InternalServerError(format!("Failed to read CA: {}", e))),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to read CA: {}",
+            e
+        ))),
     }
 }
 
@@ -506,10 +579,16 @@ pub async fn generate_tenant_ca_handler(
     Path(tenant_id_str): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<()>, AppError> {
-    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    let tenant_manager = state
+        .cert_manager
+        .for_tenant(tenant_id_str.clone())
+        .map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
     match tenant_manager.create_ca(None) {
         Ok(_) => Ok(Json(())),
-        Err(e) => Err(AppError::InternalServerError(format!("Failed to generate Tenant CA: {}", e))),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to generate Tenant CA: {}",
+            e
+        ))),
     }
 }
 
@@ -519,10 +598,16 @@ pub async fn upload_tenant_ca_handler(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<()>, AppError> {
-    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    let tenant_manager = state
+        .cert_manager
+        .for_tenant(tenant_id_str.clone())
+        .map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
     match tenant_manager.save_custom_ca(body.as_bytes()) {
         Ok(_) => Ok(Json(())),
-        Err(e) => Err(AppError::InternalServerError(format!("Failed to save Custom CA: {}", e))),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to save Custom CA: {}",
+            e
+        ))),
     }
 }
 
@@ -531,10 +616,16 @@ pub async fn get_tenant_ca_handler(
     Path(tenant_id_str): Path<String>,
     State(state): State<AppState>,
 ) -> Result<String, AppError> {
-    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    let tenant_manager = state
+        .cert_manager
+        .for_tenant(tenant_id_str.clone())
+        .map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
     match tenant_manager.get_ca_cert_pem() {
         Ok(pem) => Ok(pem),
-        Err(e) => Err(AppError::InternalServerError(format!("Failed to read Tenant CA: {}", e))),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to read Tenant CA: {}",
+            e
+        ))),
     }
 }
 
@@ -543,9 +634,15 @@ pub async fn generate_client_cert_handler(
     Path((tenant_id_str, device_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<CertificateData>, AppError> {
-    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    let tenant_manager = state
+        .cert_manager
+        .for_tenant(tenant_id_str.clone())
+        .map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
     match tenant_manager.create_client_cert(&device_id) {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(AppError::InternalServerError(format!("Failed to generate Client Cert: {}", e))),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to generate Client Cert: {}",
+            e
+        ))),
     }
 }

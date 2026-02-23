@@ -8,10 +8,14 @@
         "bind_ws": null
     },
     "processor": {
-        "shadow_topic_prefix": "things/"
+        "shadow_topic_prefix": "things/",
+        "telemetry_topics": [
+            "things/+/data"
+        ]
     },
     "database": {
         "path": "sqlite://.forest.db?mode=rwc",
+        "timeseries_path": null,
         "_path_postgres_example": "postgres://user:password@localhost/forest_db",
         "create_if_missing": true
     },

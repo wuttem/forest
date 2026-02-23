@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 pub type ConnectionSet = dashmap::DashSet<String>;
 
-pub async fn start_server(config: &ForestConfig) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+pub async fn start_server(
+    config: &ForestConfig,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let db_path = PathBuf::from(&config.database.path);
 
     let maybe_db = DB::open_default(db_path.to_str().unwrap()).await;

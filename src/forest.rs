@@ -3,16 +3,16 @@ extern crate forest;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use clap::Parser;
+use forest::api::services::create_device as create_device_api;
+use forest::certs::CertificateManager;
+use forest::cli::{Cli, Commands};
 use forest::config::ForestConfig;
 use forest::db::DB;
 use forest::models::TenantId;
 use forest::server::start_server;
-use forest::cli::{Cli, Commands};
-use forest::api::services::create_device as create_device_api;
-use forest::certs::CertificateManager;
 use tokio::runtime::Runtime;
 use tracing::Level;
-use clap::Parser;
 
 fn main() {
     let cli = Cli::parse();
@@ -31,9 +31,7 @@ fn main() {
         .with_thread_names(false)
         .with_max_level(debug_level);
 
-    builder
-        .try_init()
-        .expect("Error initializing subscriber");
+    builder.try_init().expect("Error initializing subscriber");
 
     let config_file = cli.config.as_deref();
     tracing::info!("Starting Forest");
@@ -73,7 +71,10 @@ fn main() {
         .unwrap();
 
     match &cli.command {
-        Commands::Server { bind_mqtt_v3, bind_mqtt_v5 } => {
+        Commands::Server {
+            bind_mqtt_v3,
+            bind_mqtt_v5,
+        } => {
             if let Some(bind_mqtt_v3) = bind_mqtt_v3 {
                 config.mqtt.bind_v3 = bind_mqtt_v3.clone();
             }
@@ -81,14 +82,14 @@ fn main() {
                 config.mqtt.bind_v5 = bind_mqtt_v5.clone();
             }
             run_server(rt, config);
-        },
+        }
         Commands::Version => {
             println!("Forest Version: {}", env!("CARGO_PKG_VERSION"));
-        },
+        }
 
         Commands::CreateDevice { device_id } => {
             create_device(rt, &device_id, config);
-        },
+        }
     }
 }
 
@@ -110,8 +111,6 @@ fn run_server(rt: Runtime, config: ForestConfig) {
     });
 }
 
-
-
 fn get_certificate_manager(config: &ForestConfig) -> CertificateManager {
     let tenant_id = config.tenant_id.clone();
     let cert_manager = match CertificateManager::new(&config.cert_dir, tenant_id) {
@@ -132,11 +131,11 @@ fn setup_server_certs(config: &ForestConfig) {
     match cert_manager.setup(&server_name, &host_names) {
         Ok(_) => {
             tracing::info!("Server certificates successfully set up");
-        },
+        }
         Err(e) => {
             tracing::error!("Failed to set up server certificates: {}", e);
             panic!("Failed to set up server certificates");
-        },
+        }
     }
 }
 
@@ -168,10 +167,10 @@ fn create_device(rt: Runtime, device_id: &str, config: ForestConfig) {
                 if let Some(cert) = &device.certificate {
                     println!("\nDevice Cert: \n{}", cert);
                 }
-            },
+            }
             Err(e) => {
                 tracing::error!("Failed to create device: {}", e);
-            },
+            }
         }
     });
 }

@@ -36,7 +36,7 @@ pub enum Commands {
         bind_mqtt_v5: Option<String>,
     },
     Version,
-    #[command(name="create-device")]
+    #[command(name = "create-device")]
     CreateDevice {
         /// Device ID
         #[arg(long)]

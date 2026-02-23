@@ -1,7 +1,7 @@
+pub mod client;
 pub mod error;
 pub mod handlers;
 pub mod routes;
-pub mod client;
 pub mod services;
 
 use tokio_util::sync::CancellationToken;
@@ -32,7 +32,8 @@ pub async fn start_api_server(
     connected_clients: Arc<ConnectionSet>,
     config: &ForestConfig,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
-    let cert_manager = Arc::new(CertificateManager::new(&config.cert_dir, config.tenant_id.clone()).unwrap());
+    let cert_manager =
+        Arc::new(CertificateManager::new(&config.cert_dir, config.tenant_id.clone()).unwrap());
     let state = AppState {
         db: db.clone(),
         mqtt_sender,

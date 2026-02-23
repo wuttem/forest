@@ -6,7 +6,14 @@ use tempfile::TempDir;
 async fn setup_db() -> Arc<DB> {
     let _temp_dir = TempDir::new().unwrap();
     let db_id = uuid::Uuid::new_v4().simple();
-    Arc::new(DB::open_default(&format!("sqlite:file:memdb_{}?mode=memory&cache=shared", db_id)).await.unwrap())
+    Arc::new(
+        DB::open_default(&format!(
+            "sqlite:file:memdb_{}?mode=memory&cache=shared",
+            db_id
+        ))
+        .await
+        .unwrap(),
+    )
 }
 
 async fn setup_mqtt(db: Arc<DB>) -> MqttServer {

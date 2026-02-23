@@ -1,5 +1,5 @@
-use crate::timeseries::{LatLong, MetricValue};
 use crate::models::TenantId;
+use crate::timeseries::{LatLong, MetricValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

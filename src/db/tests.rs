@@ -1,11 +1,11 @@
 use super::*;
 use crate::dataconfig::{DataConfig, DataType, MetricConfig};
+use crate::models::{AuthConfig, DeviceCredential, Tenant, TenantId};
 use crate::shadow::StateDocument;
 use crate::timeseries::FloatTimeSeries;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use uuid::Uuid;
-use crate::models::{AuthConfig, Tenant, TenantId, DeviceCredential};
 
 async fn setup_db() -> (DB, TempDir) {
     let temp_dir = TempDir::new().unwrap();
@@ -20,19 +20,36 @@ async fn setup_db() -> (DB, TempDir) {
 #[tokio::test]
 async fn test_put_get_multiple_buckets() {
     let (db, _temp) = setup_db().await;
-    let mut ts = FloatTimeSeries::new();
-    // Two hours of data
-    ts.add_point(1710511200, 1.0); // Hour 1
-    ts.add_point(1710511200 + 3600, 2.0); // Hour 2
 
-    let key = b"test2";
-    db._put_timeseries(key, &MetricTimeSeries::from(&ts))
-        .await
-        .unwrap();
+    // Two hours of data
+    db.insert_metric_row(
+        &TenantId::Default,
+        "device_1",
+        "temperature",
+        1710511200,
+        MetricValue::Float(1.0),
+    )
+    .await
+    .unwrap();
+    db.insert_metric_row(
+        &TenantId::Default,
+        "device_1",
+        "temperature",
+        1710511200 + 3600,
+        MetricValue::Float(2.0),
+    )
+    .await
+    .unwrap();
 
     // Query first hour only
     let result = db
-        ._get_timeseries(key, 1710511200, 1710511200 + 3599)
+        .get_metric(
+            &TenantId::Default,
+            "device_1",
+            "temperature",
+            1710511200,
+            1710511200 + 3599,
+        )
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
@@ -47,16 +64,17 @@ async fn test_no_db_connection_ts() {
     let db = DB {
         path: String::from("path"),
         pool: None,
+        ts_pool: None,
     };
-    let ts = FloatTimeSeries::new();
 
     assert!(matches!(
-        db._put_timeseries(b"key", &MetricTimeSeries::from(&ts)).await,
+        db.put_metric(&TenantId::Default, "dev", "temp", MetricValue::Float(1.0))
+            .await,
         Err(DatabaseError::DatabaseConnectionError)
     ));
 
     assert!(matches!(
-        db._get_timeseries(b"key", 0, 1).await,
+        db.get_metric(&TenantId::Default, "dev", "temp", 0, 1).await,
         Err(DatabaseError::DatabaseConnectionError)
     ));
 }
@@ -64,7 +82,10 @@ async fn test_no_db_connection_ts() {
 #[tokio::test]
 async fn test_empty_range() {
     let (db, _temp) = setup_db().await;
-    let result = db._get_timeseries(b"nonexistent", 0, 1).await.unwrap();
+    let result = db
+        .get_metric(&TenantId::Default, "nonexistent", "temp", 0, 1)
+        .await
+        .unwrap();
     assert_eq!(result.len(), 0);
 }
 
@@ -75,26 +96,48 @@ async fn test_get_timeseries_last() {
     let (db, _temp) = setup_db().await;
 
     // Create test data with multiple timestamps
-    let mut ts1 = FloatTimeSeries::new();
-    ts1.add_point(1710511200, 1.0); // 14:00
-    ts1.add_point(1710511200 + 1800, 2.0); // 14:30
-
-    let mut ts2 = FloatTimeSeries::new();
-    ts2.add_point(1710514800, 3.0); // 15:00
-    ts2.add_point(1710514800 + 1800, 4.0); // 15:30
-
-    let key = b"test_last";
-
-    // Store both timeseries
-    db._put_timeseries(key, &MetricTimeSeries::from(&ts1))
-        .await
-        .unwrap();
-    db._put_timeseries(key, &MetricTimeSeries::from(&ts2))
-        .await
-        .unwrap();
+    db.insert_metric_row(
+        &TenantId::Default,
+        "last_dev",
+        "temp",
+        1710511200,
+        MetricValue::Float(1.0),
+    )
+    .await
+    .unwrap();
+    db.insert_metric_row(
+        &TenantId::Default,
+        "last_dev",
+        "temp",
+        1710511200 + 1800,
+        MetricValue::Float(2.0),
+    )
+    .await
+    .unwrap();
+    db.insert_metric_row(
+        &TenantId::Default,
+        "last_dev",
+        "temp",
+        1710514800,
+        MetricValue::Float(3.0),
+    )
+    .await
+    .unwrap();
+    db.insert_metric_row(
+        &TenantId::Default,
+        "last_dev",
+        "temp",
+        1710514800 + 1800,
+        MetricValue::Float(4.0),
+    )
+    .await
+    .unwrap();
 
     // Test getting last point
-    let result = db._get_timeseries_last(key, 1).await.unwrap();
+    let result = db
+        .get_last_metric(&TenantId::Default, "last_dev", "temp", 1)
+        .await
+        .unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(
         *result.get_value_for_timestamp(1710514800 + 1800).unwrap(),
@@ -102,20 +145,29 @@ async fn test_get_timeseries_last() {
     );
 
     // Test getting more points than available
-    let result = db._get_timeseries_last(key, 10).await.unwrap();
+    let result = db
+        .get_last_metric(&TenantId::Default, "last_dev", "temp", 10)
+        .await
+        .unwrap();
     assert_eq!(result.len(), 4);
 
     // Test empty key
-    let result = db._get_timeseries_last(b"nonexistent", 1).await.unwrap();
+    let result = db
+        .get_last_metric(&TenantId::Default, "nonexistent", "temp", 1)
+        .await
+        .unwrap();
     assert_eq!(result.len(), 0);
 
     // Test no DB connection
     let db_no_conn = DB {
         path: "path".to_string(),
         pool: None,
+        ts_pool: None,
     };
     assert!(matches!(
-        db_no_conn._get_timeseries_last(key, 1).await,
+        db_no_conn
+            .get_last_metric(&TenantId::Default, "last_dev", "temp", 1)
+            .await,
         Err(DatabaseError::DatabaseConnectionError)
     ));
 }
@@ -142,7 +194,10 @@ async fn test_upsert_shadow() {
     // Test initial insert
     db._upsert_shadow(&update1).await.unwrap();
 
-    let shadow = db._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default).await.unwrap();
+    let shadow = db
+        ._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default)
+        .await
+        .unwrap();
 
     assert_eq!(shadow.device_id, "thermostat-01");
     assert_eq!(shadow.get_reported_value()["temperature"], 22.5);
@@ -164,7 +219,10 @@ async fn test_upsert_shadow() {
     db._upsert_shadow(&update2).await.unwrap();
 
     // Verify shadow was updated
-    let shadow = db._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default).await.unwrap();
+    let shadow = db
+        ._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default)
+        .await
+        .unwrap();
     let desired = shadow.get_desired_value();
     let reported = shadow.get_reported_value();
     assert_eq!(desired["temperature"], 21.0);
@@ -187,7 +245,10 @@ async fn test_upsert_shadow() {
     };
     db._upsert_shadow(&update3).await.unwrap();
 
-    let shadow = db._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default).await.unwrap();
+    let shadow = db
+        ._get_shadow("thermostat-01", &ShadowName::Default, &TenantId::Default)
+        .await
+        .unwrap();
     let desired = shadow.get_desired_value();
     let reported = shadow.get_reported_value();
     assert_eq!(desired["temperature"], 21.0);
@@ -225,8 +286,14 @@ async fn test_store_and_get_tenant_data_config() {
         ],
     };
 
-    db.store_tenant_data_config(&TenantId::Default, &config).await.unwrap();
-    let actual = db.get_data_config(&TenantId::Default, None).await.unwrap().unwrap();
+    db.store_tenant_data_config(&TenantId::Default, &config)
+        .await
+        .unwrap();
+    let actual = db
+        .get_data_config(&TenantId::Default, None)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(actual.metrics.len(), 2);
 }
 
@@ -327,7 +394,9 @@ async fn test_delete_data_config() {
         .unwrap();
 
     // Delete device config
-    db.delete_data_config(&TenantId::new("tenant1"), Some("device1")).await.unwrap();
+    db.delete_data_config(&TenantId::new("tenant1"), Some("device1"))
+        .await
+        .unwrap();
 
     // Verify device config is gone but tenant config remains
     let result = db
@@ -339,10 +408,15 @@ async fn test_delete_data_config() {
     assert_eq!(result.metrics[0].name, "temperature");
 
     // Delete tenant config
-    db.delete_data_config(&TenantId::new("tenant1"), None).await.unwrap();
+    db.delete_data_config(&TenantId::new("tenant1"), None)
+        .await
+        .unwrap();
 
     // Verify tenant config is gone
-    let result = db.get_data_config(&TenantId::new("tenant1"), None).await.unwrap();
+    let result = db
+        .get_data_config(&TenantId::new("tenant1"), None)
+        .await
+        .unwrap();
     assert!(matches!(result, None));
 }
 
@@ -385,7 +459,10 @@ async fn test_list_data_configs() {
         .unwrap();
 
     // List configs
-    let configs = db.list_data_configs(&TenantId::new("tenant1")).await.unwrap();
+    let configs = db
+        .list_data_configs(&TenantId::new("tenant1"))
+        .await
+        .unwrap();
 
     // Verify number of configs
     assert_eq!(configs.len(), 3);
@@ -414,7 +491,10 @@ async fn test_list_data_configs() {
     assert_eq!(device2_entry.metrics[0].name, "pressure");
 
     // Verify empty list for non-existent tenant
-    let empty_configs = db.list_data_configs(&TenantId::new("tenant2")).await.unwrap();
+    let empty_configs = db
+        .list_data_configs(&TenantId::new("tenant2"))
+        .await
+        .unwrap();
     assert_eq!(empty_configs.len(), 0);
 }
 
@@ -463,19 +543,31 @@ async fn test_device_passwords() {
     db.add_device_password(&credential).await.unwrap();
 
     // Verify correct password
-    let is_valid = db.verify_device_password(&tenant_id, device_id, "user1", password).await.unwrap();
+    let is_valid = db
+        .verify_device_password(&tenant_id, device_id, "user1", password)
+        .await
+        .unwrap();
     assert!(is_valid);
 
     // Verify wrong password
-    let is_invalid = db.verify_device_password(&tenant_id, device_id, "user1", "wrong_password").await.unwrap();
+    let is_invalid = db
+        .verify_device_password(&tenant_id, device_id, "user1", "wrong_password")
+        .await
+        .unwrap();
     assert!(!is_invalid);
 
     // Verify wrong username
-    let is_invalid_user = db.verify_device_password(&tenant_id, device_id, "wrong_user", password).await.unwrap();
+    let is_invalid_user = db
+        .verify_device_password(&tenant_id, device_id, "wrong_user", password)
+        .await
+        .unwrap();
     assert!(!is_invalid_user);
 
     // List passwords
-    let usernames = db.list_device_passwords(&tenant_id, device_id).await.unwrap();
+    let usernames = db
+        .list_device_passwords(&tenant_id, device_id)
+        .await
+        .unwrap();
     assert_eq!(usernames.len(), 1);
     assert_eq!(usernames[0], "user1");
 
@@ -491,13 +583,21 @@ async fn test_device_passwords() {
     db.add_device_password(&credential2).await.unwrap();
 
     // Verify overridden password
-    let is_valid2 = db.verify_device_password(&tenant_id, device_id, "user1", "newword").await.unwrap();
+    let is_valid2 = db
+        .verify_device_password(&tenant_id, device_id, "user1", "newword")
+        .await
+        .unwrap();
     assert!(is_valid2);
-    let is_invalid_old = db.verify_device_password(&tenant_id, device_id, "user1", password).await.unwrap();
+    let is_invalid_old = db
+        .verify_device_password(&tenant_id, device_id, "user1", password)
+        .await
+        .unwrap();
     assert!(!is_invalid_old);
 
     // Ensure list still returns one item (overridden)
-    let usernames = db.list_device_passwords(&tenant_id, device_id).await.unwrap();
+    let usernames = db
+        .list_device_passwords(&tenant_id, device_id)
+        .await
+        .unwrap();
     assert_eq!(usernames.len(), 1);
 }
-

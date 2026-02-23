@@ -1,7 +1,7 @@
 extern crate forest;
 
-use forest::shadow::*;
 use forest::models::{ShadowName, TenantId};
+use forest::shadow::*;
 use serde_json::json;
 
 fn main() {

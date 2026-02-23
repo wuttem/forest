@@ -3,13 +3,17 @@ extern crate forest;
 use std::future::Future;
 use std::pin::Pin;
 
-use forest::mqtt::MqttSender;
 use forest::db::DB;
+use forest::mqtt::MqttSender;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    let db = Arc::new(DB::open_default("sqlite:file:memdb_mqtt_example?mode=memory&cache=shared").await.unwrap());
+    let db = Arc::new(
+        DB::open_default("sqlite:file:memdb_mqtt_example?mode=memory&cache=shared")
+            .await
+            .unwrap(),
+    );
     let mut mqtt_server = forest::mqtt::start_broker(None, db).await;
 
     // Example: create a message channel and receive messages

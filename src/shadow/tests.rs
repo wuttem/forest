@@ -93,7 +93,11 @@ fn test_state_document_update() {
 #[test]
 fn test_shadow_update() {
     // Create initial shadow
-    let mut shadow = Shadow::new(&"thermostat-123", &ShadowName::new("main"), &TenantId::new("tenant"));
+    let mut shadow = Shadow::new(
+        &"thermostat-123",
+        &ShadowName::new("main"),
+        &TenantId::new("tenant"),
+    );
 
     // Create valid update with both reported and desired
     let update = StateUpdateDocument {
@@ -183,7 +187,11 @@ fn test_shadow_update() {
 #[test]
 fn test_shadow_serialization() {
     // Create shadow with realistic data
-    let mut shadow = Shadow::new(&"garage-sensor-01", &ShadowName::new("main"), &TenantId::new("tenant"));
+    let mut shadow = Shadow::new(
+        &"garage-sensor-01",
+        &ShadowName::new("main"),
+        &TenantId::new("tenant"),
+    );
 
     // Update with initial state
     let update = StateUpdateDocument {

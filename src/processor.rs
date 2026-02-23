@@ -1,10 +1,10 @@
 use crate::db::DB;
+use crate::models::{ShadowName, TenantId};
 use crate::mqtt::{ClientStatus, MqttError, MqttMessage, MqttSender};
-use rumqttd::AdminLink;
 use crate::server::ConnectionSet;
 use crate::shadow::{Shadow, StateUpdateDocument};
-use crate::models::{ShadowName, TenantId};
 use futures_util::stream::StreamExt;
+use rumqttd::AdminLink;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -31,12 +31,14 @@ pub enum ProcessorError {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessorConfig {
     pub shadow_topic_prefix: String,
+    pub telemetry_topics: Vec<String>,
 }
 
 impl Default for ProcessorConfig {
     fn default() -> Self {
         ProcessorConfig {
             shadow_topic_prefix: "things/".to_string(),
+            telemetry_topics: vec!["things/+/data".to_string()],
         }
     }
 }
@@ -127,6 +129,33 @@ fn split_device_id(device_id: &str) -> (TenantId, DeviceId) {
 }
 
 fn get_topic_type(msg: &MqttMessage, processor_state: &ProcessorState) -> TopicType {
+    // Check if it matches any telemetry topics
+    for pattern in &processor_state.config.telemetry_topics {
+        let pattern_parts: Vec<&str> = pattern.split('/').collect();
+        let topic_parts: Vec<&str> = msg.topic.split('/').collect();
+
+        if pattern_parts.len() == topic_parts.len() {
+            let mut matches = true;
+            let mut extracted_device_id = None;
+            for (p, t) in pattern_parts.iter().zip(topic_parts.iter()) {
+                if *p == "+" {
+                    if extracted_device_id.is_none() {
+                        extracted_device_id = Some(t.to_string());
+                    }
+                } else if p != t {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                if let Some(device_id_str) = extracted_device_id {
+                    let (tenant, device) = split_device_id(&device_id_str);
+                    return TopicType::DataUpdate(tenant, device);
+                }
+            }
+        }
+    }
+
     // check if the topic is a shadow update and strip prefix
     let shadow_topic = match msg
         .topic
@@ -149,11 +178,7 @@ fn get_topic_type(msg: &MqttMessage, processor_state: &ProcessorState) -> TopicT
         }
         [device_id, "shadow", shadow_name, "update"] => {
             let (tenant, device) = split_device_id(device_id);
-            return TopicType::ShadowUpdate(
-                tenant,
-                device,
-                ShadowName::from_str(shadow_name),
-            );
+            return TopicType::ShadowUpdate(tenant, device, ShadowName::from_str(shadow_name));
         }
         [device_id, "data"] => {
             let (tenant, device) = split_device_id(device_id);
@@ -165,11 +190,7 @@ fn get_topic_type(msg: &MqttMessage, processor_state: &ProcessorState) -> TopicT
         }
         [device_id, "shadow", shadow_name, "update", "delta"] => {
             let (tenant, device) = split_device_id(device_id);
-            return TopicType::ShadowDelta(
-                tenant,
-                device,
-                ShadowName::from_str(shadow_name),
-            );
+            return TopicType::ShadowDelta(tenant, device, ShadowName::from_str(shadow_name));
         }
         _ => {
             return TopicType::Other;
@@ -310,10 +331,10 @@ async fn run_stream_worker(mut admin_link: AdminLink, state: ProcessorState) {
                 topic: topic.to_string(),
                 payload: publish.payload.to_vec(),
             };
-            
+
             // NOTE: client_info could be passed to handle_message if needed in the future
             let _ = client_info.client_id;
-            
+
             let state = state.clone();
             tokio::spawn(async move {
                 let _ = handle_message(msg, state).await;
@@ -380,10 +401,11 @@ pub async fn start_processor(
         let _ = tokio::join!(h1, h2);
     });
 
-    let topic_patterns = vec![
+    let mut topic_patterns = vec![
         format!("{}+/shadow/update", config.shadow_topic_prefix),
         format!("{}+/shadow/+/update", config.shadow_topic_prefix),
     ];
+    topic_patterns.extend(config.telemetry_topics.clone());
     processor.subscribe_shadow_updates(topic_patterns).await?;
     Ok((processor, combined_handle))
 }

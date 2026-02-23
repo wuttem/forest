@@ -1,16 +1,14 @@
 use crate::dataconfig::{DataConfig, DataConfigEntry};
-use crate::shadow::{
-    Shadow, ShadowError, ShadowSerializationError, StateUpdateDocument,
-};
-use crate::models::{DeviceMetadata, ShadowName, TenantId, Tenant, DeviceCredential};
+use crate::models::{DeviceCredential, DeviceMetadata, ShadowName, Tenant, TenantId};
+use crate::shadow::{Shadow, ShadowError, ShadowSerializationError, StateUpdateDocument};
 use crate::timeseries::{
     MetricTimeSeries, MetricValue, TimeSeriesConversions, TimeseriesSerializationError,
 };
-use sqlx::{AnyPool, Row, any::AnyPoolOptions, query};
 use serde::{Deserialize, Serialize};
-use tracing::{warn, info};
+use sqlx::{any::AnyPoolOptions, query, AnyPool, Row};
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::{info, warn};
 
 const MAX_FUTURE_SECONDS: u64 = 60 * 60 * 24 * 365;
 
@@ -47,6 +45,7 @@ impl From<Box<bincode::ErrorKind>> for DatabaseError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     pub path: String, // e.g., "sqlite:./test.db" or "postgres://user:pass@localhost/db"
+    pub timeseries_path: Option<String>,
     pub create_if_missing: bool,
 }
 
@@ -54,6 +53,7 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         DatabaseConfig {
             path: String::from("sqlite://.forest.db?mode=rwc"),
+            timeseries_path: None,
             create_if_missing: true,
         }
     }
@@ -62,6 +62,7 @@ impl Default for DatabaseConfig {
 pub struct DB {
     pub path: String,
     pub pool: Option<Arc<AnyPool>>,
+    pub ts_pool: Option<Arc<AnyPool>>,
 }
 
 impl DB {
@@ -77,10 +78,19 @@ impl DB {
             .max_connections(5)
             .connect(&config.path)
             .await?;
-        
+
+        let ts_pool = if let Some(ts_path) = &config.timeseries_path {
+            AnyPoolOptions::new()
+                .max_connections(5)
+                .connect(ts_path)
+                .await?
+        } else {
+            pool.clone()
+        };
+
         // Ensure tables exist
         let mut conn = pool.acquire().await?;
-        
+
         let is_postgres = config.path.starts_with("postgres");
         let blob_type = if is_postgres { "BYTEA" } else { "BLOB" };
         let serial_type = if is_postgres { "SERIAL" } else { "INTEGER" };
@@ -95,18 +105,37 @@ impl DB {
         );
         sqlx::query(&kv_query).execute(&mut *conn).await?;
 
-        // Create table for Timeseries Buckets
-        let ts_query = format!(
-            "CREATE TABLE IF NOT EXISTS timeseries_buckets (
-                id {} PRIMARY KEY,
-                key TEXT NOT NULL,
-                bucket_timestamp BIGINT NOT NULL,
-                data {} NOT NULL,
-                UNIQUE(key, bucket_timestamp)
-            )",
-            serial_type, blob_type
-        );
-        sqlx::query(&ts_query).execute(&mut *conn).await?;
+        // Create table for Timeseries Data
+        let mut ts_conn = ts_pool.acquire().await?;
+        let is_ts_postgres = config
+            .timeseries_path
+            .as_ref()
+            .unwrap_or(&config.path)
+            .starts_with("postgres");
+
+        let ts_query = "
+            CREATE TABLE IF NOT EXISTS timeseries_data (
+                timestamp BIGINT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                value_float DOUBLE PRECISION,
+                value_int BIGINT,
+                value_lat DOUBLE PRECISION,
+                value_long DOUBLE PRECISION
+            )
+        ";
+        sqlx::query(ts_query).execute(&mut *ts_conn).await?;
+
+        if is_ts_postgres {
+            // Attempt to create timescaledb extension and hypertable. If it fails (e.g., restricted access), we just continue
+            let _ = sqlx::query("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+                .execute(&mut *ts_conn)
+                .await;
+            let _ = sqlx::query("SELECT create_hypertable('timeseries_data', 'timestamp', chunk_time_interval => 86400000, if_not_exists => TRUE);").execute(&mut *ts_conn).await;
+        }
+
+        let _ = sqlx::query("CREATE INDEX IF NOT EXISTS ix_ts_data_tdm ON timeseries_data (tenant_id, device_id, metric_name, timestamp DESC);").execute(&mut *ts_conn).await;
 
         // Create table for Shadows
         sqlx::query(
@@ -116,8 +145,10 @@ impl DB {
                 shadow_name TEXT NOT NULL,
                 data TEXT NOT NULL,
                 PRIMARY KEY (tenant_id, device_id, shadow_name)
-            )"
-        ).execute(&mut *conn).await?;
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
 
         // Create table for Data Configs
         sqlx::query(
@@ -126,8 +157,10 @@ impl DB {
                 device_prefix TEXT NOT NULL,
                 config TEXT NOT NULL,
                 PRIMARY KEY (tenant_id, device_prefix)
-            )"
-        ).execute(&mut *conn).await?;
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
 
         // Create table for Device Metadata
         sqlx::query(
@@ -136,8 +169,10 @@ impl DB {
                 device_id TEXT NOT NULL,
                 metadata TEXT NOT NULL,
                 PRIMARY KEY (tenant_id, device_id)
-            )"
-        ).execute(&mut *conn).await?;
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
 
         // Create table for Tenants
         sqlx::query(
@@ -145,8 +180,10 @@ impl DB {
                 tenant_id TEXT NOT NULL,
                 data TEXT NOT NULL,
                 PRIMARY KEY (tenant_id)
-            )"
-        ).execute(&mut *conn).await?;
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
 
         // Create table for Device Credentials
         sqlx::query(
@@ -157,18 +194,24 @@ impl DB {
                 password_hash TEXT NOT NULL,
                 created_at BIGINT NOT NULL,
                 PRIMARY KEY (tenant_id, device_id, username)
-            )"
-        ).execute(&mut *conn).await?;
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
 
         Ok(DB {
             path: config.path.to_owned(),
             pool: Some(Arc::new(pool)),
+            ts_pool: Some(Arc::new(ts_pool)),
         })
     }
 
     pub async fn destroy(path: &str) -> Result<(), DatabaseError> {
         // No direct equivalent in SQLx Any, depends on driver. For SQLite it's deleting the file.
-        warn!("Destroy not fully supported through SQLx Any. Path: {}", path);
+        warn!(
+            "Destroy not fully supported through SQLx Any. Path: {}",
+            path
+        );
         Ok(())
     }
 
@@ -182,12 +225,14 @@ impl DB {
 
             sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
                 .bind(&t_id)
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
 
             sqlx::query("INSERT INTO tenants (tenant_id, data) VALUES ($1, $2)")
                 .bind(&t_id)
                 .bind(&data)
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
 
             tx.commit().await?;
             Ok(())
@@ -199,16 +244,19 @@ impl DB {
     pub async fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, DatabaseError> {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
-            let row: Option<(String,)> = sqlx::query_as(
-                "SELECT data FROM tenants WHERE tenant_id = $1"
-            )
-            .bind(&t_id)
-            .fetch_optional(&**pool).await?;
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT data FROM tenants WHERE tenant_id = $1")
+                    .bind(&t_id)
+                    .fetch_optional(&**pool)
+                    .await?;
 
             match row {
                 Some((data,)) => {
                     let tenant = serde_json::from_str(&data).map_err(|e| {
-                        DatabaseError::DatabaseValueError(format!("Failed to deserialize tenant: {}", e))
+                        DatabaseError::DatabaseValueError(format!(
+                            "Failed to deserialize tenant: {}",
+                            e
+                        ))
                     })?;
                     Ok(Some(tenant))
                 }
@@ -219,7 +267,10 @@ impl DB {
         }
     }
 
-    pub async fn add_device_password(&self, credential: &DeviceCredential) -> Result<(), DatabaseError> {
+    pub async fn add_device_password(
+        &self,
+        credential: &DeviceCredential,
+    ) -> Result<(), DatabaseError> {
         if let Some(pool) = &self.pool {
             let mut tx = pool.begin().await?;
             let t_id = credential.tenant_id.to_string();
@@ -249,7 +300,13 @@ impl DB {
         }
     }
 
-    pub async fn verify_device_password(&self, tenant_id: &TenantId, device_id: &str, username: &str, password: &str) -> Result<bool, DatabaseError> {
+    pub async fn verify_device_password(
+        &self,
+        tenant_id: &TenantId,
+        device_id: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<bool, DatabaseError> {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
             let row: Option<(String,)> = sqlx::query_as(
@@ -259,7 +316,7 @@ impl DB {
             .bind(device_id)
             .bind(username)
             .fetch_optional(&**pool).await?;
-            
+
             match row {
                 Some((hash_str,)) => {
                     // Check against bcrypt hash
@@ -271,7 +328,7 @@ impl DB {
                         }
                     };
                     Ok(valid)
-                },
+                }
                 None => Ok(false),
             }
         } else {
@@ -279,15 +336,20 @@ impl DB {
         }
     }
 
-    pub async fn list_device_passwords(&self, tenant_id: &TenantId, device_id: &str) -> Result<Vec<String>, DatabaseError> {
-         if let Some(pool) = &self.pool {
+    pub async fn list_device_passwords(
+        &self,
+        tenant_id: &TenantId,
+        device_id: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
             let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT username FROM device_credentials WHERE tenant_id = $1 AND device_id = $2"
+                "SELECT username FROM device_credentials WHERE tenant_id = $1 AND device_id = $2",
             )
             .bind(&t_id)
             .bind(device_id)
-            .fetch_all(&**pool).await?;
+            .fetch_all(&**pool)
+            .await?;
 
             let usernames = rows.into_iter().map(|(u,)| u).collect();
             Ok(usernames)
@@ -303,12 +365,14 @@ impl DB {
             let mut tx = pool.begin().await?;
             sqlx::query("DELETE FROM kv_store WHERE key = $1")
                 .bind(key)
-                .execute(&mut *tx).await?;
-            
+                .execute(&mut *tx)
+                .await?;
+
             sqlx::query("INSERT INTO kv_store (key, value) VALUES ($1, $2)")
                 .bind(key)
                 .bind(data)
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
             tx.commit().await?;
             Ok(())
         } else {
@@ -318,9 +382,11 @@ impl DB {
 
     pub async fn get_data(&self, key: &str) -> Result<Option<Vec<u8>>, DatabaseError> {
         if let Some(pool) = &self.pool {
-            let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT value FROM kv_store WHERE key = $1")
-                .bind(key)
-                .fetch_optional(&**pool).await?;
+            let row: Option<(Vec<u8>,)> =
+                sqlx::query_as("SELECT value FROM kv_store WHERE key = $1")
+                    .bind(key)
+                    .fetch_optional(&**pool)
+                    .await?;
             Ok(row.map(|r| r.0))
         } else {
             Err(DatabaseError::DatabaseConnectionError)
@@ -331,30 +397,23 @@ impl DB {
         if let Some(pool) = &self.pool {
             sqlx::query("DELETE FROM kv_store WHERE key = $1")
                 .bind(key)
-                .execute(&**pool).await?;
+                .execute(&**pool)
+                .await?;
             Ok(())
         } else {
             Err(DatabaseError::DatabaseConnectionError)
         }
     }
 
-    pub async fn multi_get_data(&self, keys: &[&str]) -> Result<Vec<Option<Vec<u8>>>, DatabaseError> {
+    pub async fn multi_get_data(
+        &self,
+        keys: &[&str],
+    ) -> Result<Vec<Option<Vec<u8>>>, DatabaseError> {
         let mut results = Vec::new();
         for key in keys {
             results.push(self.get_data(key).await?);
         }
         Ok(results)
-    }
-
-    pub async fn _put_timeseries(&self, key: &[u8], ts: &MetricTimeSeries) -> Result<(), DatabaseError> {
-        let key_str = String::from_utf8_lossy(key).to_string();
-        let mut ts_buckets: Vec<(u64, MetricTimeSeries)> = Vec::new();
-        for ts_bucket in ts.buckets() {
-            if let Some(first_ts) = ts_bucket.first_timestamp() {
-                ts_buckets.push((first_ts, ts_bucket));
-            }
-        }
-        self._upsert_timeseries_buckets(&key_str, ts_buckets).await
     }
 
     pub async fn put_metric(
@@ -364,93 +423,49 @@ impl DB {
         metric_name: &str,
         value: MetricValue,
     ) -> Result<(), DatabaseError> {
-        let key = format!("{}#{}#{}", tenant_id, device_id, metric_name).into_bytes();
-        let generic_ts = value.as_timeseries(chrono::Utc::now().timestamp() as u64);
-        self._put_timeseries(&key, &generic_ts).await
+        let timestamp = chrono::Utc::now().timestamp() as u64;
+        self.insert_metric_row(tenant_id, device_id, metric_name, timestamp, value)
+            .await
     }
 
-    async fn _upsert_timeseries_buckets(
+    pub async fn insert_metric_row(
         &self,
-        key_str: &str,
-        ts_buckets: Vec<(u64, MetricTimeSeries)>,
+        tenant_id: &TenantId,
+        device_id: &str,
+        metric_name: &str,
+        timestamp: u64,
+        value: MetricValue,
     ) -> Result<(), DatabaseError> {
-        if let Some(pool) = &self.pool {
-            let mut tx = pool.begin().await?;
+        if let Some(ts_pool) = &self.ts_pool {
+            let mut val_float: Option<f64> = None;
+            let mut val_int: Option<i64> = None;
+            let mut val_lat: Option<f64> = None;
+            let mut val_long: Option<f64> = None;
 
-            for (bucket_timestamp, new_ts) in &ts_buckets {
-                let existing: Option<(Vec<u8>,)> = sqlx::query_as(
-                    "SELECT data FROM timeseries_buckets WHERE key = $1 AND bucket_timestamp = $2"
-                )
-                .bind(key_str)
-                .bind(*bucket_timestamp as i64)
-                .fetch_optional(&mut *tx).await?;
-
-                let mut final_ts = match existing {
-                    Some((data,)) => MetricTimeSeries::from_binary(&data)?,
-                    None => MetricTimeSeries::new(),
-                };
-
-                final_ts.merge(new_ts);
-                let ts_data = final_ts.to_binary()?;
-
-                sqlx::query(
-                    "DELETE FROM timeseries_buckets WHERE key = $1 AND bucket_timestamp = $2"
-                )
-                .bind(key_str)
-                .bind(*bucket_timestamp as i64)
-                .execute(&mut *tx).await?;
-
-                sqlx::query(
-                    "INSERT INTO timeseries_buckets (key, bucket_timestamp, data) VALUES ($1, $2, $3)"
-                )
-                .bind(key_str)
-                .bind(*bucket_timestamp as i64)
-                .bind(ts_data)
-                .execute(&mut *tx).await?;
-            }
-
-            tx.commit().await?;
-            Ok(())
-        } else {
-            Err(DatabaseError::DatabaseConnectionError)
-        }
-    }
-
-    pub async fn _get_timeseries(
-        &self,
-        key: &[u8],
-        min_ts: u64,
-        max_ts: u64,
-    ) -> Result<MetricTimeSeries, DatabaseError> {
-        let mut merged_ts = MetricTimeSeries::new();
-        let key_str = String::from_utf8_lossy(key).to_string();
-
-        if let Some(pool) = &self.pool {
-            // Find buckets that migh contain data in the range. 
-            // We need to query buckets where timestamp + 3600 (approx max bucket size) is >= min_ts
-            // and timestamp <= max_ts. To be safe, we just fetch all for the key and trim.
-            // A more optimized query would be: bucket_timestamp >= min_ts - 4000 AND bucket_timestamp <= max_ts
-            let min_bucket_ts = min_ts.saturating_sub(4000) as i64;
-            let max_bucket_ts = max_ts as i64;
-
-            let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
-                "SELECT data FROM timeseries_buckets WHERE key = $1 AND bucket_timestamp >= $2 AND bucket_timestamp <= $3 ORDER BY bucket_timestamp ASC"
-            )
-            .bind(&key_str)
-            .bind(min_bucket_ts)
-            .bind(max_bucket_ts)
-            .fetch_all(&**pool).await?;
-
-            for (value,) in rows {
-                match MetricTimeSeries::from_binary(&value) {
-                    Ok(ts) => {
-                        merged_ts.merge(&ts);
-                    }
-                    Err(e) => return Err(DatabaseError::TimeseriesSerializationError(e)),
+            match value {
+                MetricValue::Float(f) => val_float = Some(f),
+                MetricValue::Int(i) => val_int = Some(i),
+                MetricValue::Location(loc) => {
+                    val_lat = Some(loc.latitude);
+                    val_long = Some(loc.longitude);
                 }
             }
-            merged_ts.trim(min_ts, max_ts);
-            Ok(merged_ts)
+
+            sqlx::query(
+                "INSERT INTO timeseries_data (timestamp, tenant_id, device_id, metric_name, value_float, value_int, value_lat, value_long) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            )
+            .bind(timestamp as i64)
+            .bind(tenant_id.to_string())
+            .bind(device_id)
+            .bind(metric_name)
+            .bind(val_float)
+            .bind(val_int)
+            .bind(val_lat)
+            .bind(val_long)
+            .execute(&**ts_pool).await?;
+
+            Ok(())
         } else {
             Err(DatabaseError::DatabaseConnectionError)
         }
@@ -464,8 +479,40 @@ impl DB {
         start: u64,
         end: u64,
     ) -> Result<MetricTimeSeries, DatabaseError> {
-        let key = format!("{}#{}#{}", tenant_id, device_id, metric_name).into_bytes();
-        self._get_timeseries(&key, start, end).await
+        let mut ts = MetricTimeSeries::new();
+        if let Some(ts_pool) = &self.ts_pool {
+            let t_id = tenant_id.to_string();
+            let rows: Vec<(i64, Option<f64>, Option<i64>, Option<f64>, Option<f64>)> = sqlx::query_as(
+                "SELECT timestamp, value_float, value_int, value_lat, value_long FROM timeseries_data 
+                 WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3 AND timestamp >= $4 AND timestamp <= $5 
+                 ORDER BY timestamp ASC"
+            )
+            .bind(&t_id)
+            .bind(device_id)
+            .bind(metric_name)
+            .bind(start as i64)
+            .bind(end as i64)
+            .fetch_all(&**ts_pool).await?;
+
+            for (timestamp, v_f, v_i, v_lat, v_long) in rows {
+                let val = if let Some(f) = v_f {
+                    MetricValue::Float(f)
+                } else if let Some(i) = v_i {
+                    MetricValue::Int(i)
+                } else if let (Some(lat), Some(long)) = (v_lat, v_long) {
+                    MetricValue::Location(crate::timeseries::LatLong {
+                        latitude: lat,
+                        longitude: long,
+                    })
+                } else {
+                    continue;
+                };
+                ts.add_point(timestamp as u64, val);
+            }
+            Ok(ts)
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
     }
 
     pub async fn get_last_metric(
@@ -475,44 +522,45 @@ impl DB {
         metric_name: &str,
         limit: u64,
     ) -> Result<MetricTimeSeries, DatabaseError> {
-        let key = format!("{}#{}#{}", tenant_id, device_id, metric_name).into_bytes();
-        self._get_timeseries_last(&key, limit).await
-    }
-
-    pub async fn _get_timeseries_last(
-        &self,
-        key_prefix: &[u8],
-        limit: u64,
-    ) -> Result<MetricTimeSeries, DatabaseError> {
-        let mut merged_ts = MetricTimeSeries::new();
-        let mut key_str = String::from_utf8_lossy(key_prefix).to_string();
-        key_str.push('%');
-
-        if let Some(pool) = &self.pool {
-            let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
-                "SELECT data FROM timeseries_buckets WHERE key LIKE $1 ORDER BY bucket_timestamp DESC LIMIT 10" // Assuming 10 buckets is enough to satisfy the limit
+        let mut ts = MetricTimeSeries::new();
+        if let Some(ts_pool) = &self.ts_pool {
+            let t_id = tenant_id.to_string();
+            let rows: Vec<(i64, Option<f64>, Option<i64>, Option<f64>, Option<f64>)> = sqlx::query_as(
+                "SELECT timestamp, value_float, value_int, value_lat, value_long FROM timeseries_data 
+                 WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3 
+                 ORDER BY timestamp DESC LIMIT $4"
             )
-            .bind(&key_str)
-            .fetch_all(&**pool).await?;
+            .bind(&t_id)
+            .bind(device_id)
+            .bind(metric_name)
+            .bind(limit as i64)
+            .fetch_all(&**ts_pool).await?;
 
-            let mut count: u64 = 0;
-            for (value,) in rows.into_iter().rev() { // reverse to maintain chronological order from db perspective
-                 match MetricTimeSeries::from_binary(&value) {
-                    Ok(ts) => {
-                        merged_ts.merge(&ts);
-                        count += merged_ts.len() as u64;
-                    }
-                    Err(e) => return Err(DatabaseError::TimeseriesSerializationError(e)),
-                }
+            for (timestamp, v_f, v_i, v_lat, v_long) in rows.into_iter().rev() {
+                let val = if let Some(f) = v_f {
+                    MetricValue::Float(f)
+                } else if let Some(i) = v_i {
+                    MetricValue::Int(i)
+                } else if let (Some(lat), Some(long)) = (v_lat, v_long) {
+                    MetricValue::Location(crate::timeseries::LatLong {
+                        latitude: lat,
+                        longitude: long,
+                    })
+                } else {
+                    continue;
+                };
+                ts.add_point(timestamp as u64, val);
             }
-            merged_ts.keep_last(limit as usize);
-            Ok(merged_ts)
+            Ok(ts)
         } else {
             Err(DatabaseError::DatabaseConnectionError)
         }
     }
 
-    pub async fn _upsert_shadow(&self, update: &StateUpdateDocument) -> Result<Shadow, DatabaseError> {
+    pub async fn _upsert_shadow(
+        &self,
+        update: &StateUpdateDocument,
+    ) -> Result<Shadow, DatabaseError> {
         if let Some(pool) = &self.pool {
             let mut tx = pool.begin().await?;
             let tenant_id = update.tenant_id.to_string();
@@ -535,12 +583,13 @@ impl DB {
             let shadow_data = shadow.to_json()?;
 
             sqlx::query(
-                "DELETE FROM shadows WHERE tenant_id = $1 AND device_id = $2 AND shadow_name = $3"
+                "DELETE FROM shadows WHERE tenant_id = $1 AND device_id = $2 AND shadow_name = $3",
             )
             .bind(&tenant_id)
             .bind(&update.device_id)
             .bind(&shadow_name)
-            .execute(&mut *tx).await?;
+            .execute(&mut *tx)
+            .await?;
 
             sqlx::query(
                 "INSERT INTO shadows (tenant_id, device_id, shadow_name, data) VALUES ($1, $2, $3, $4)"
@@ -597,11 +646,14 @@ impl DB {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
             let s_name = shadow_name.as_str().to_string();
-            sqlx::query("DELETE FROM shadows WHERE tenant_id = $1 AND device_id = $2 AND shadow_name = $3")
-                .bind(&t_id)
-                .bind(device_id)
-                .bind(&s_name)
-                .execute(&**pool).await?;
+            sqlx::query(
+                "DELETE FROM shadows WHERE tenant_id = $1 AND device_id = $2 AND shadow_name = $3",
+            )
+            .bind(&t_id)
+            .bind(device_id)
+            .bind(&s_name)
+            .execute(&**pool)
+            .await?;
             Ok(())
         } else {
             Err(DatabaseError::DatabaseConnectionError)
@@ -613,7 +665,10 @@ impl DB {
         Ok(())
     }
 
-    pub async fn cancel_all_background_tasks(&self, _wait: Option<bool>) -> Result<(), DatabaseError> {
+    pub async fn cancel_all_background_tasks(
+        &self,
+        _wait: Option<bool>,
+    ) -> Result<(), DatabaseError> {
         // Not applicable for SQLx
         Ok(())
     }
@@ -631,13 +686,17 @@ impl DB {
             sqlx::query("DELETE FROM data_configs WHERE tenant_id = $1 AND device_prefix = $2")
                 .bind(&t_id)
                 .bind("")
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
 
-            sqlx::query("INSERT INTO data_configs (tenant_id, device_prefix, config) VALUES ($1, $2, $3)")
-                .bind(&t_id)
-                .bind("")
-                .bind(&config_data)
-                .execute(&mut *tx).await?;
+            sqlx::query(
+                "INSERT INTO data_configs (tenant_id, device_prefix, config) VALUES ($1, $2, $3)",
+            )
+            .bind(&t_id)
+            .bind("")
+            .bind(&config_data)
+            .execute(&mut *tx)
+            .await?;
 
             tx.commit().await?;
             Ok(())
@@ -660,13 +719,17 @@ impl DB {
             sqlx::query("DELETE FROM data_configs WHERE tenant_id = $1 AND device_prefix = $2")
                 .bind(&t_id)
                 .bind(device_id_prefix)
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
 
-            sqlx::query("INSERT INTO data_configs (tenant_id, device_prefix, config) VALUES ($1, $2, $3)")
-                .bind(&t_id)
-                .bind(device_id_prefix)
-                .bind(&config_data)
-                .execute(&mut *tx).await?;
+            sqlx::query(
+                "INSERT INTO data_configs (tenant_id, device_prefix, config) VALUES ($1, $2, $3)",
+            )
+            .bind(&t_id)
+            .bind(device_id_prefix)
+            .bind(&config_data)
+            .execute(&mut *tx)
+            .await?;
 
             tx.commit().await?;
             Ok(())
@@ -682,16 +745,18 @@ impl DB {
     ) -> Result<Option<DataConfig>, DatabaseError> {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
-            
+
             // Get tenant config
             let tenant_row: Option<(String,)> = sqlx::query_as(
-                "SELECT config FROM data_configs WHERE tenant_id = $1 AND device_prefix = $2"
+                "SELECT config FROM data_configs WHERE tenant_id = $1 AND device_prefix = $2",
             )
             .bind(&t_id)
             .bind("")
-            .fetch_optional(&**pool).await?;
+            .fetch_optional(&**pool)
+            .await?;
 
-            let maybe_tenant_cfg = tenant_row.map(|(config_str,)| DataConfig::from_json(&config_str));
+            let maybe_tenant_cfg =
+                tenant_row.map(|(config_str,)| DataConfig::from_json(&config_str));
 
             if let Some(d_id) = device_id {
                 // Find all matching prefixes
@@ -715,7 +780,7 @@ impl DB {
                 }
 
                 if let Some((_, device_cfg)) = best_match {
-                     if let Some(tenant_cfg) = maybe_tenant_cfg {
+                    if let Some(tenant_cfg) = maybe_tenant_cfg {
                         return Ok(Some(tenant_cfg.merge_with(&device_cfg)));
                     } else {
                         return Ok(Some(device_cfg));
@@ -739,7 +804,8 @@ impl DB {
             sqlx::query("DELETE FROM data_configs WHERE tenant_id = $1 AND device_prefix = $2")
                 .bind(&t_id)
                 .bind(pfx)
-                .execute(&**pool).await?;
+                .execute(&**pool)
+                .await?;
             Ok(())
         } else {
             Err(DatabaseError::DatabaseConnectionError)
@@ -753,15 +819,20 @@ impl DB {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
             let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT device_prefix, config FROM data_configs WHERE tenant_id = $1"
+                "SELECT device_prefix, config FROM data_configs WHERE tenant_id = $1",
             )
             .bind(&t_id)
-            .fetch_all(&**pool).await?;
-            
+            .fetch_all(&**pool)
+            .await?;
+
             let mut configs = Vec::new();
             for (prefix, config_str) in rows {
                 let config = DataConfig::from_json(&config_str);
-                let device_prefix = if prefix.is_empty() { None } else { Some(prefix) };
+                let device_prefix = if prefix.is_empty() {
+                    None
+                } else {
+                    Some(prefix)
+                };
                 configs.push(DataConfigEntry {
                     tenant_id: tenant_id.clone(),
                     device_prefix,
@@ -774,27 +845,35 @@ impl DB {
         }
     }
 
-
-
-    pub async fn put_device_metadata(&self, metadata: &DeviceMetadata) -> Result<(), DatabaseError> {
+    pub async fn put_device_metadata(
+        &self,
+        metadata: &DeviceMetadata,
+    ) -> Result<(), DatabaseError> {
         if let Some(pool) = &self.pool {
             let mut tx = pool.begin().await?;
             let t_id = metadata.tenant_id.to_string();
             let d_id = metadata.device_id.clone();
             let data = serde_json::to_string(metadata).map_err(|e| {
-                DatabaseError::DatabaseValueError(format!("Failed to serialize device metadata: {}", e))
+                DatabaseError::DatabaseValueError(format!(
+                    "Failed to serialize device metadata: {}",
+                    e
+                ))
             })?;
 
             sqlx::query("DELETE FROM device_metadata WHERE tenant_id = $1 AND device_id = $2")
                 .bind(&t_id)
                 .bind(&d_id)
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
 
-            sqlx::query("INSERT INTO device_metadata (tenant_id, device_id, metadata) VALUES ($1, $2, $3)")
-                .bind(&t_id)
-                .bind(&d_id)
-                .bind(&data)
-                .execute(&mut *tx).await?;
+            sqlx::query(
+                "INSERT INTO device_metadata (tenant_id, device_id, metadata) VALUES ($1, $2, $3)",
+            )
+            .bind(&t_id)
+            .bind(&d_id)
+            .bind(&data)
+            .execute(&mut *tx)
+            .await?;
 
             tx.commit().await?;
             Ok(())
@@ -811,16 +890,20 @@ impl DB {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
             let row: Option<(String,)> = sqlx::query_as(
-                "SELECT metadata FROM device_metadata WHERE tenant_id = $1 AND device_id = $2"
+                "SELECT metadata FROM device_metadata WHERE tenant_id = $1 AND device_id = $2",
             )
             .bind(&t_id)
             .bind(device_id)
-            .fetch_optional(&**pool).await?;
+            .fetch_optional(&**pool)
+            .await?;
 
             match row {
                 Some((metadata_str,)) => {
                     let metadata = serde_json::from_str(&metadata_str).map_err(|e| {
-                        DatabaseError::DatabaseValueError(format!("Failed to deserialize device metadata: {}", e))
+                        DatabaseError::DatabaseValueError(format!(
+                            "Failed to deserialize device metadata: {}",
+                            e
+                        ))
                     })?;
                     Ok(Some(metadata))
                 }
@@ -831,23 +914,28 @@ impl DB {
         }
     }
 
-    pub async fn list_devices(&self, tenant_id: &TenantId) -> Result<Vec<DeviceMetadata>, DatabaseError> {
+    pub async fn list_devices(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<DeviceMetadata>, DatabaseError> {
         if let Some(pool) = &self.pool {
             let t_id = tenant_id.to_string();
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT metadata FROM device_metadata WHERE tenant_id = $1"
-            )
-            .bind(&t_id)
-            .fetch_all(&**pool).await?;
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT metadata FROM device_metadata WHERE tenant_id = $1")
+                    .bind(&t_id)
+                    .fetch_all(&**pool)
+                    .await?;
 
             let mut devices = Vec::new();
             for (metadata_str,) in rows {
-                 match serde_json::from_str(&metadata_str) {
+                match serde_json::from_str(&metadata_str) {
                     Ok(metadata) => devices.push(metadata),
-                    Err(e) => return Err(DatabaseError::DatabaseValueError(format!(
+                    Err(e) => {
+                        return Err(DatabaseError::DatabaseValueError(format!(
                             "Failed to deserialize device metadata: {}",
                             e
-                    )))
+                        )))
+                    }
                 }
             }
             Ok(devices)
@@ -866,7 +954,8 @@ impl DB {
             sqlx::query("DELETE FROM device_metadata WHERE tenant_id = $1 AND device_id = $2")
                 .bind(&t_id)
                 .bind(device_id)
-                .execute(&**pool).await?;
+                .execute(&**pool)
+                .await?;
             Ok(())
         } else {
             Err(DatabaseError::DatabaseConnectionError)
@@ -878,4 +967,3 @@ impl DB {
 
 #[cfg(test)]
 mod tests;
-

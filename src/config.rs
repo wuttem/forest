@@ -1,10 +1,10 @@
-use std::path::Path;
-use serde::{Serialize,Deserialize};
 use config::{Config, ConfigError, Environment, File};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
+use crate::db::DatabaseConfig;
 use crate::mqtt::MqttConfig;
 use crate::processor::ProcessorConfig;
-use crate::db::DatabaseConfig;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ForestConfig {
@@ -42,12 +42,32 @@ impl ForestConfig {
             // Start with default values
             .set_default("mqtt.bind_v3", default_config.mqtt.bind_v3)?
             .set_default("mqtt.bind_v5", default_config.mqtt.bind_v5)?
-            .set_default("mqtt.enable_heartbeat", default_config.mqtt.enable_heartbeat)?
+            .set_default(
+                "mqtt.enable_heartbeat",
+                default_config.mqtt.enable_heartbeat,
+            )?
             .set_default("mqtt.enable_ssl", default_config.mqtt.enable_ssl)?
-            .set_default("mqtt.max_connections", default_config.mqtt.max_connections as u64)?
-            .set_default("processor.shadow_topic_prefix", default_config.processor.shadow_topic_prefix)?
-            .set_default("database.create_if_missing", default_config.database.create_if_missing)?
+            .set_default(
+                "mqtt.max_connections",
+                default_config.mqtt.max_connections as u64,
+            )?
+            .set_default(
+                "processor.shadow_topic_prefix",
+                default_config.processor.shadow_topic_prefix,
+            )?
+            .set_default(
+                "processor.telemetry_topics",
+                default_config.processor.telemetry_topics,
+            )?
+            .set_default(
+                "database.create_if_missing",
+                default_config.database.create_if_missing,
+            )?
             .set_default("database.path", default_config.database.path)?
+            .set_default(
+                "database.timeseries_path",
+                default_config.database.timeseries_path,
+            )?
             .set_default("bind_api", default_config.bind_api)?
             .set_default("tenant_id", default_config.tenant_id)?
             // .set_default("cert_dir", default_config.cert_dir)?
@@ -71,7 +91,7 @@ impl ForestConfig {
         if let Ok(ref mut forest_config) = config {
             let cert_dir = forest_config.cert_dir.clone();
             let cert_dir = cert_dir.trim_end_matches('/');
-            
+
             if forest_config.mqtt.ssl_cert_path.is_none() {
                 forest_config.mqtt.ssl_cert_path = Some(format!("{}/server.pem", cert_dir));
             }
