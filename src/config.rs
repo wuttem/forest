@@ -79,7 +79,7 @@ impl ForestConfig {
                 forest_config.mqtt.ssl_key_path = Some(format!("{}/server-key.pem", cert_dir));
             }
             if forest_config.mqtt.ssl_ca_path.is_none() {
-                forest_config.mqtt.ssl_ca_path = Some(format!("{}/ca.pem", cert_dir));
+                forest_config.mqtt.ssl_ca_path = Some(format!("{}/cacerts", cert_dir));
             }
         }
 

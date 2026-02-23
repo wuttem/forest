@@ -27,7 +27,7 @@ pub async fn start_server(config: &ForestConfig) -> (CancellationToken, tokio::t
 
     let connected_clients = Arc::new(ConnectionSet::new());
 
-    let mut mqtt_broker = start_broker(Some(config.mqtt.clone())).await;
+    let mut mqtt_broker = start_broker(Some(config.mqtt.clone()), db.clone()).await;
     let _broker_cancel_token = mqtt_broker.cancel_token.clone();
     let mqtt_sender = mqtt_broker.mqtt.clone();
     let mqtt_admin = mqtt_broker.admin.take().unwrap(); // Move admin out of MqttServer

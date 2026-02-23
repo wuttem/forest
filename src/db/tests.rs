@@ -5,6 +5,7 @@ use crate::timeseries::FloatTimeSeries;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use uuid::Uuid;
+use crate::models::{AuthConfig, Tenant, TenantId, DeviceCredential};
 
 async fn setup_db() -> (DB, TempDir) {
     let temp_dir = TempDir::new().unwrap();
@@ -416,3 +417,87 @@ async fn test_list_data_configs() {
     let empty_configs = db.list_data_configs(&TenantId::new("tenant2")).await.unwrap();
     assert_eq!(empty_configs.len(), 0);
 }
+
+#[tokio::test]
+async fn test_tenant_put_get() {
+    let (db, _temp) = setup_db().await;
+
+    let tenant_id = TenantId::new("my_tenant");
+    let mut auth_config = AuthConfig::default();
+    auth_config.allow_passwords = true;
+
+    let tenant = Tenant::new(&tenant_id).with_auth_config(auth_config);
+
+    // Save tenant
+    db.put_tenant(&tenant).await.unwrap();
+
+    // Get tenant
+    let fetched = db.get_tenant(&tenant_id).await.unwrap().unwrap();
+    assert_eq!(fetched.tenant_id.as_str(), "my_tenant");
+    assert_eq!(fetched.auth_config.allow_passwords, true);
+    assert_eq!(fetched.auth_config.allow_certificates, true);
+
+    // Non-existent tenant
+    let missing = db.get_tenant(&TenantId::new("missing")).await.unwrap();
+    assert!(missing.is_none());
+}
+
+#[tokio::test]
+async fn test_device_passwords() {
+    let (db, _temp) = setup_db().await;
+    let tenant_id = TenantId::new("tenant_auth");
+    let device_id = "device_123";
+
+    let password = "my_secure_password";
+    let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap();
+
+    let credential = DeviceCredential {
+        tenant_id: tenant_id.clone(),
+        device_id: device_id.to_string(),
+        username: "user1".to_string(),
+        password_hash: hash,
+        created_at: chrono::Utc::now().timestamp() as u64,
+    };
+
+    // Add password
+    db.add_device_password(&credential).await.unwrap();
+
+    // Verify correct password
+    let is_valid = db.verify_device_password(&tenant_id, device_id, "user1", password).await.unwrap();
+    assert!(is_valid);
+
+    // Verify wrong password
+    let is_invalid = db.verify_device_password(&tenant_id, device_id, "user1", "wrong_password").await.unwrap();
+    assert!(!is_invalid);
+
+    // Verify wrong username
+    let is_invalid_user = db.verify_device_password(&tenant_id, device_id, "wrong_user", password).await.unwrap();
+    assert!(!is_invalid_user);
+
+    // List passwords
+    let usernames = db.list_device_passwords(&tenant_id, device_id).await.unwrap();
+    assert_eq!(usernames.len(), 1);
+    assert_eq!(usernames[0], "user1");
+
+    // Override existing
+    let hash2 = bcrypt::hash("newword", bcrypt::DEFAULT_COST).unwrap();
+    let credential2 = DeviceCredential {
+        tenant_id: tenant_id.clone(),
+        device_id: device_id.to_string(),
+        username: "user1".to_string(),
+        password_hash: hash2,
+        created_at: chrono::Utc::now().timestamp() as u64,
+    };
+    db.add_device_password(&credential2).await.unwrap();
+
+    // Verify overridden password
+    let is_valid2 = db.verify_device_password(&tenant_id, device_id, "user1", "newword").await.unwrap();
+    assert!(is_valid2);
+    let is_invalid_old = db.verify_device_password(&tenant_id, device_id, "user1", password).await.unwrap();
+    assert!(!is_invalid_old);
+
+    // Ensure list still returns one item (overridden)
+    let usernames = db.list_device_passwords(&tenant_id, device_id).await.unwrap();
+    assert_eq!(usernames.len(), 1);
+}
+

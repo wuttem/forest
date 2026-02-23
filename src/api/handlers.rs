@@ -7,9 +7,10 @@ use crate::dataconfig::{DataConfig, DataConfigEntry};
 use crate::db::DatabaseError;
 use crate::processor::send_delta_to_mqtt;
 use crate::shadow::{NestedStateDocument, Shadow, StateUpdateDocument};
-use crate::models::{DeviceInformation, DeviceMetadata};
+use crate::models::{DeviceInformation, DeviceMetadata, Tenant, AuthConfig, DeviceCredential};
 use crate::models::{ShadowName, TenantId};
 use crate::timeseries::{TimeSeriesConversions, TimeSeriesModel};
+use crate::certs::CertificateData;
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -409,5 +410,142 @@ pub async fn delete_device_metadata_handler(
     match state.db.delete_device_metadata(&tenant_id, &device_id).await {
         Ok(_) => Ok(Json(())),
         Err(e) => Err(AppError::DatabaseError(e)),
+    }
+}
+
+pub async fn create_tenant_handler(
+    State(state): State<AppState>,
+    Json(tenant): Json<Tenant>,
+) -> Result<Json<Tenant>, AppError> {
+    match state.db.put_tenant(&tenant).await {
+        Ok(_) => Ok(Json(tenant)),
+        Err(e) => Err(AppError::DatabaseError(e)),
+    }
+}
+
+pub async fn get_tenant_handler(
+    Path(tenant_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Tenant>, AppError> {
+    let tenant_id = TenantId::from_str(&tenant_id);
+    match state.db.get_tenant(&tenant_id).await {
+        Ok(Some(tenant)) => Ok(Json(tenant)),
+        Ok(None) => Err(AppError::NotFound(format!(
+            "Tenant not found: {}",
+            tenant_id
+        ))),
+        Err(e) => Err(AppError::DatabaseError(e)),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AddPasswordBody {
+    pub username: String,
+    pub password_plaintext: String,
+}
+
+pub async fn add_device_password_handler(
+    Path((tenant_id_str, device_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(body): Json<AddPasswordBody>,
+) -> Result<Json<()>, AppError> {
+    let tenant_id = TenantId::from_str(&tenant_id_str);
+    
+    let password_hash = match bcrypt::hash(&body.password_plaintext, bcrypt::DEFAULT_COST) {
+        Ok(h) => h,
+        Err(e) => return Err(AppError::InternalServerError(format!("Hashing error: {}", e))),
+    };
+
+    let credential = DeviceCredential {
+        tenant_id,
+        device_id,
+        username: body.username,
+        password_hash,
+        created_at: chrono::Utc::now().timestamp() as u64,
+    };
+
+    match state.db.add_device_password(&credential).await {
+        Ok(_) => Ok(Json(())),
+        Err(e) => Err(AppError::DatabaseError(e)),
+    }
+}
+
+pub async fn get_device_passwords_handler(
+    Path((tenant_id_str, device_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<String>>, AppError> {
+    let tenant_id = TenantId::from_str(&tenant_id_str);
+    match state.db.list_device_passwords(&tenant_id, &device_id).await {
+         Ok(usernames) => Ok(Json(usernames)),
+         Err(e) => Err(AppError::DatabaseError(e)),
+    }
+}
+
+// Generate server CA
+pub async fn generate_server_ca_handler(
+    State(state): State<AppState>,
+) -> Result<Json<()>, AppError> {
+    match state.cert_manager.create_ca(None) {
+        Ok(_) => Ok(Json(())),
+        Err(e) => Err(AppError::InternalServerError(format!("Failed to generate Server CA: {}", e))),
+    }
+}
+
+// Get server CA
+pub async fn get_server_ca_handler(
+    State(state): State<AppState>,
+) -> Result<String, AppError> {
+    match state.cert_manager.get_ca_cert_pem() {
+        Ok(pem) => Ok(pem),
+        Err(e) => Err(AppError::InternalServerError(format!("Failed to read CA: {}", e))),
+    }
+}
+
+// Generate tenant CA
+pub async fn generate_tenant_ca_handler(
+    Path(tenant_id_str): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<()>, AppError> {
+    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    match tenant_manager.create_ca(None) {
+        Ok(_) => Ok(Json(())),
+        Err(e) => Err(AppError::InternalServerError(format!("Failed to generate Tenant CA: {}", e))),
+    }
+}
+
+// Upload custom tenant CA
+pub async fn upload_tenant_ca_handler(
+    Path(tenant_id_str): Path<String>,
+    State(state): State<AppState>,
+    body: String,
+) -> Result<Json<()>, AppError> {
+    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    match tenant_manager.save_custom_ca(body.as_bytes()) {
+        Ok(_) => Ok(Json(())),
+        Err(e) => Err(AppError::InternalServerError(format!("Failed to save Custom CA: {}", e))),
+    }
+}
+
+// Get tenant CA
+pub async fn get_tenant_ca_handler(
+    Path(tenant_id_str): Path<String>,
+    State(state): State<AppState>,
+) -> Result<String, AppError> {
+    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    match tenant_manager.get_ca_cert_pem() {
+        Ok(pem) => Ok(pem),
+        Err(e) => Err(AppError::InternalServerError(format!("Failed to read Tenant CA: {}", e))),
+    }
+}
+
+// Generate client cert
+pub async fn generate_client_cert_handler(
+    Path((tenant_id_str, device_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<CertificateData>, AppError> {
+    let tenant_manager = state.cert_manager.for_tenant(tenant_id_str.clone()).map_err(|e| AppError::InternalServerError(format!("Cert Manager: {}", e)))?;
+    match tenant_manager.create_client_cert(&device_id) {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => Err(AppError::InternalServerError(format!("Failed to generate Client Cert: {}", e))),
     }
 }

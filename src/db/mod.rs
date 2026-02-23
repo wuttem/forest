@@ -2,7 +2,7 @@ use crate::dataconfig::{DataConfig, DataConfigEntry};
 use crate::shadow::{
     Shadow, ShadowError, ShadowSerializationError, StateUpdateDocument,
 };
-use crate::models::{DeviceMetadata, ShadowName, TenantId};
+use crate::models::{DeviceMetadata, ShadowName, TenantId, Tenant, DeviceCredential};
 use crate::timeseries::{
     MetricTimeSeries, MetricValue, TimeSeriesConversions, TimeseriesSerializationError,
 };
@@ -139,6 +139,27 @@ impl DB {
             )"
         ).execute(&mut *conn).await?;
 
+        // Create table for Tenants
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tenants (
+                tenant_id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY (tenant_id)
+            )"
+        ).execute(&mut *conn).await?;
+
+        // Create table for Device Credentials
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS device_credentials (
+                tenant_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                PRIMARY KEY (tenant_id, device_id, username)
+            )"
+        ).execute(&mut *conn).await?;
+
         Ok(DB {
             path: config.path.to_owned(),
             pool: Some(Arc::new(pool)),
@@ -149,6 +170,130 @@ impl DB {
         // No direct equivalent in SQLx Any, depends on driver. For SQLite it's deleting the file.
         warn!("Destroy not fully supported through SQLx Any. Path: {}", path);
         Ok(())
+    }
+
+    pub async fn put_tenant(&self, tenant: &Tenant) -> Result<(), DatabaseError> {
+        if let Some(pool) = &self.pool {
+            let mut tx = pool.begin().await?;
+            let t_id = tenant.tenant_id.to_string();
+            let data = serde_json::to_string(tenant).map_err(|e| {
+                DatabaseError::DatabaseValueError(format!("Failed to serialize tenant: {}", e))
+            })?;
+
+            sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
+                .bind(&t_id)
+                .execute(&mut *tx).await?;
+
+            sqlx::query("INSERT INTO tenants (tenant_id, data) VALUES ($1, $2)")
+                .bind(&t_id)
+                .bind(&data)
+                .execute(&mut *tx).await?;
+
+            tx.commit().await?;
+            Ok(())
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
+    }
+
+    pub async fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, DatabaseError> {
+        if let Some(pool) = &self.pool {
+            let t_id = tenant_id.to_string();
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT data FROM tenants WHERE tenant_id = $1"
+            )
+            .bind(&t_id)
+            .fetch_optional(&**pool).await?;
+
+            match row {
+                Some((data,)) => {
+                    let tenant = serde_json::from_str(&data).map_err(|e| {
+                        DatabaseError::DatabaseValueError(format!("Failed to deserialize tenant: {}", e))
+                    })?;
+                    Ok(Some(tenant))
+                }
+                None => Ok(None),
+            }
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
+    }
+
+    pub async fn add_device_password(&self, credential: &DeviceCredential) -> Result<(), DatabaseError> {
+        if let Some(pool) = &self.pool {
+            let mut tx = pool.begin().await?;
+            let t_id = credential.tenant_id.to_string();
+            let d_id = &credential.device_id;
+            let u_name = &credential.username;
+            let p_hash = &credential.password_hash;
+            let c_at = credential.created_at as i64;
+
+            sqlx::query("DELETE FROM device_credentials WHERE tenant_id = $1 AND device_id = $2 AND username = $3")
+                .bind(&t_id)
+                .bind(d_id)
+                .bind(u_name)
+                .execute(&mut *tx).await?;
+
+            sqlx::query("INSERT INTO device_credentials (tenant_id, device_id, username, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)")
+                .bind(&t_id)
+                .bind(d_id)
+                .bind(u_name)
+                .bind(p_hash)
+                .bind(c_at)
+                .execute(&mut *tx).await?;
+
+            tx.commit().await?;
+            Ok(())
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
+    }
+
+    pub async fn verify_device_password(&self, tenant_id: &TenantId, device_id: &str, username: &str, password: &str) -> Result<bool, DatabaseError> {
+        if let Some(pool) = &self.pool {
+            let t_id = tenant_id.to_string();
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT password_hash FROM device_credentials WHERE tenant_id = $1 AND device_id = $2 AND username = $3"
+            )
+            .bind(&t_id)
+            .bind(device_id)
+            .bind(username)
+            .fetch_optional(&**pool).await?;
+            
+            match row {
+                Some((hash_str,)) => {
+                    // Check against bcrypt hash
+                    let valid = match bcrypt::verify(password, &hash_str) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!("Bcrypt verify error: {:?}", e);
+                            false
+                        }
+                    };
+                    Ok(valid)
+                },
+                None => Ok(false),
+            }
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
+    }
+
+    pub async fn list_device_passwords(&self, tenant_id: &TenantId, device_id: &str) -> Result<Vec<String>, DatabaseError> {
+         if let Some(pool) = &self.pool {
+            let t_id = tenant_id.to_string();
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT username FROM device_credentials WHERE tenant_id = $1 AND device_id = $2"
+            )
+            .bind(&t_id)
+            .bind(device_id)
+            .fetch_all(&**pool).await?;
+
+            let usernames = rows.into_iter().map(|(u,)| u).collect();
+            Ok(usernames)
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
     }
 
     pub async fn set_data(&self, key: &str, data: &[u8]) -> Result<(), DatabaseError> {

@@ -37,6 +37,7 @@ reqwest = { version = "0.12.12", features = ["json"] }
 openssl = { version = "0.10.71", features = ["vendored"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "any", "sqlite", "postgres", "macros"] }
 uuid = { version = "1.21.0", features = ["v4"] }
+bcrypt = "0.18.0"
 
 [dev-dependencies]
 tempfile = "3.15.0"

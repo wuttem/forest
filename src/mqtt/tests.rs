@@ -1,6 +1,21 @@
 use super::*;
 use std::time::Duration;
+use std::sync::Arc;
 use tokio::time::sleep;
+use crate::db::{DB, DatabaseConfig};
+use crate::models::{TenantId, Tenant, AuthConfig, DeviceCredential};
+use uuid::Uuid;
+use tempfile::TempDir;
+
+async fn setup_db() -> (Arc<DB>, TempDir) {
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = DatabaseConfig::default();
+    let db_id = Uuid::new_v4().simple();
+    config.path = format!("sqlite:file:memdb_{}?mode=memory&cache=shared", db_id);
+
+    let db = DB::open(&config).await.unwrap();
+    (Arc::new(db), temp_dir)
+}
 
 fn get_test_config() -> Option<MqttConfig> {
     let mut config = MqttConfig::default();
@@ -12,8 +27,9 @@ fn get_test_config() -> Option<MqttConfig> {
 #[ignore]
 #[tokio::test]
 async fn test_server_start_stop() {
+    let (db, _temp) = setup_db().await;
     let config = get_test_config();
-    let mut server = start_broker(config).await;
+    let mut server = start_broker(config, db).await;
 
     let shutdown_received = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let shutdown_received_clone = shutdown_received.clone();
@@ -34,8 +50,9 @@ async fn test_server_start_stop() {
 #[ignore]
 #[tokio::test]
 async fn test_publish_subscribe() {
+    let (db, _temp) = setup_db().await;
     let config = get_test_config();
-    let mut server = start_broker(config).await;
+    let mut server = start_broker(config, db).await;
 
     // Create receiver
     let receiver = server.message_receiver();
@@ -63,3 +80,105 @@ async fn test_publish_subscribe() {
 
     server.shutdown();
 }
+
+#[tokio::test]
+async fn test_auth_handler() {
+    let (db, _temp) = setup_db().await;
+    
+    // Set global DB manually for testing since we aren't calling start_broker
+    let _ = GLOBAL_DB.set(db.clone());
+
+    let tenant_id = TenantId::new("test_tenant");
+    let mut auth_config = AuthConfig::default();
+    auth_config.allow_passwords = true;
+    auth_config.allow_certificates = true;
+    
+    let tenant = Tenant::new(&tenant_id).with_auth_config(auth_config);
+    db.put_tenant(&tenant).await.unwrap();
+
+    let password = "secret_password";
+    let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap();
+
+    let credential = DeviceCredential {
+        tenant_id: tenant_id.clone(),
+        device_id: "device1".to_string(),
+        username: "device1_user".to_string(),
+        password_hash: hash,
+        created_at: chrono::Utc::now().timestamp() as u64,
+    };
+    db.add_device_password(&credential).await.unwrap();
+
+    // Test valid password auth
+    let result = auth(
+        "device1".to_string(),
+        "device1_user".to_string(),
+        "secret_password".to_string(),
+        "".to_string(),
+        "test_tenant".to_string(),
+        None,
+    ).await;
+    let client_info = result.unwrap().unwrap();
+    assert_eq!(client_info.client_id, "device1");
+    assert_eq!(client_info.tenant.unwrap(), "test_tenant");
+
+    // Test invalid password auth
+    let result = auth(
+        "device1".to_string(),
+        "device1_user".to_string(),
+        "wrong_password".to_string(),
+        "".to_string(),
+        "test_tenant".to_string(),
+        None,
+    ).await;
+    assert!(result.unwrap().is_none());
+
+    // Test invalid username
+    let result = auth(
+        "device1".to_string(),
+        "wrong_username".to_string(),
+        "secret_password".to_string(),
+        "".to_string(),
+        "test_tenant".to_string(),
+        None,
+    ).await;
+    assert!(result.unwrap().is_none());
+
+    // Test valid cert auth
+    let result = auth(
+        "device_cert_1".to_string(),
+        "".to_string(),
+        "".to_string(),
+        "device_cert_1".to_string(),
+        "test_tenant".to_string(),
+        None,
+    ).await;
+    let client_info = result.unwrap().unwrap();
+    assert_eq!(client_info.client_id, "device_cert_1");
+
+    // Test mismatched cert
+    let result = auth(
+        "device_cert_1".to_string(),
+        "".to_string(),
+        "".to_string(),
+        "device_cert_2".to_string(),
+        "test_tenant".to_string(),
+        None,
+    ).await;
+    assert!(result.unwrap().is_none());
+
+    // Test passwords disabled
+    let mut tenant2 = Tenant::new(&TenantId::new("no_password_tenant"));
+    tenant2.auth_config.allow_passwords = false;
+    db.put_tenant(&tenant2).await.unwrap();
+
+    let result = auth(
+        "device1".to_string(),
+        "user1".to_string(),
+        "pass".to_string(),
+        "".to_string(),
+        "no_password_tenant".to_string(),
+        None,
+    ).await;
+    assert!(result.unwrap().is_none());
+}
+

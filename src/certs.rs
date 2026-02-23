@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
 use thiserror::Error;
+use serde::{Serialize, Deserialize};
 
 pub const CA_CERT_FILENAME: &str = "ca.pem";
 pub const CA_KEY_FILENAME: &str = "ca-key.pem";
@@ -53,6 +54,7 @@ pub enum CertificateError {
 // A type alias for our result type
 pub type CertResult<T> = Result<T, CertificateError>;
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CertificateData {
     pub cert: String,
     pub key: String,
@@ -97,7 +99,18 @@ impl CertificateManager {
             }
         }
 
+        // Create base cacerts directory
+        let cacerts_dir = self.cert_dir.join("cacerts");
+        if !cacerts_dir.exists() {
+            fs::create_dir_all(&cacerts_dir)?;
+        }
+
         Ok(())
+    }
+
+    /// Create a new CertificateManager for a specific tenant, sharing the same base directory
+    pub fn for_tenant(&self, tenant_id: String) -> CertResult<Self> {
+        Self::new(self.cert_dir.clone(), Some(tenant_id))
     }
 
     /// Setup CA and server certificate with proper hostnames
@@ -135,6 +148,24 @@ impl CertificateManager {
         }
     }
 
+    /// Get the path to a CA certificate
+    pub fn get_ca_file_path(&self) -> PathBuf {
+        let cacerts_dir = self.cert_dir.join("cacerts");
+        match &self.tenant_id {
+            Some(tenant) => cacerts_dir.join(format!("{}_ca.pem", tenant)),
+            None => cacerts_dir.join(CA_CERT_FILENAME),
+        }
+    }
+
+    /// Get the path to a CA key
+    pub fn get_ca_key_path(&self) -> PathBuf {
+        let cacerts_dir = self.cert_dir.join("cacerts");
+        match &self.tenant_id {
+            Some(tenant) => cacerts_dir.join(format!("{}_ca-key.pem", tenant)),
+            None => cacerts_dir.join(CA_KEY_FILENAME),
+        }
+    }
+
     /// Get the organization name for certificates
     fn get_org_name(&self) -> String {
         match &self.tenant_id {
@@ -145,8 +176,14 @@ impl CertificateManager {
 
     /// Save private key to file and return the PEM content as a string
     fn save_private_key(&self, key: &PKey<Private>, filename: &str) -> CertResult<String> {
-        let key_pem = key.private_key_to_pem_pkcs8()?;
         let file_path = self.get_file_path(filename);
+        self.save_private_key_absolute(key, &file_path)
+    }
+
+    /// Save private key to an absolute path and return the PEM content as a string
+    fn save_private_key_absolute(&self, key: &PKey<Private>, file_path: &Path) -> CertResult<String> {
+        let key_pem = key.private_key_to_pem_pkcs8()?;
+
         
         // Ensure directory exists
         if let Some(parent) = file_path.parent() {
@@ -167,8 +204,14 @@ impl CertificateManager {
 
     /// Save certificate to file
     fn save_certificate(&self, cert: &X509, filename: &str) -> CertResult<String> {
-        let cert_pem = cert.to_pem()?;
         let file_path = self.get_file_path(filename);
+        self.save_certificate_absolute(cert, &file_path)
+    }
+
+    /// Save certificate to an absolute path
+    fn save_certificate_absolute(&self, cert: &X509, file_path: &Path) -> CertResult<String> {
+        let cert_pem = cert.to_pem()?;
+
         
         // Ensure directory exists
         if let Some(parent) = file_path.parent() {
@@ -190,6 +233,11 @@ impl CertificateManager {
     /// Load private key from file
     fn load_private_key(&self, filename: &str) -> CertResult<PKey<Private>> {
         let path = self.get_file_path(filename);
+        self.load_private_key_absolute(&path)
+    }
+
+    /// Load private key from an absolute path
+    fn load_private_key_absolute(&self, path: &Path) -> CertResult<PKey<Private>> {
         if !path.exists() {
             return Err(CertificateError::FileNotFound(path.display().to_string()));
         }
@@ -205,6 +253,11 @@ impl CertificateManager {
     /// Load certificate from file
     fn load_certificate(&self, filename: &str) -> CertResult<X509> {
         let path = self.get_file_path(filename);
+        self.load_certificate_absolute(&path)
+    }
+
+    /// Load certificate from an absolute path
+    fn load_certificate_absolute(&self, path: &Path) -> CertResult<X509> {
         if !path.exists() {
             return Err(CertificateError::FileNotFound(path.display().to_string()));
         }
@@ -219,8 +272,8 @@ impl CertificateManager {
 
     /// Check if CA exists
     pub fn ca_exists(&self) -> bool {
-        let ca_cert_path = self.get_file_path(CA_CERT_FILENAME);
-        let ca_key_path = self.get_file_path(CA_KEY_FILENAME);
+        let ca_cert_path = self.get_ca_file_path();
+        let ca_key_path = self.get_ca_key_path();
         
         // Both files must exist for CA to be considered fully present
         ca_cert_path.exists() && ca_key_path.exists()
@@ -228,8 +281,8 @@ impl CertificateManager {
 
     /// Create Certificate Authority (CA) if it doesn't exist
     pub fn ensure_ca_exists(&self) -> CertResult<()> {
-        let ca_cert_path = self.get_file_path(CA_CERT_FILENAME);
-        let ca_key_path = self.get_file_path(CA_KEY_FILENAME);
+        let ca_cert_path = self.get_ca_file_path();
+        let ca_key_path = self.get_ca_key_path();
         
         // If both exist, we're good
         if ca_cert_path.exists() && ca_key_path.exists() {
@@ -238,12 +291,24 @@ impl CertificateManager {
         
         // If only the key exists, load it and create a certificate with it
         if !ca_cert_path.exists() && ca_key_path.exists() {
-            let ca_key = self.load_private_key(CA_KEY_FILENAME)?;
+            let ca_key = self.load_private_key_absolute(&ca_key_path)?;
             return self.create_ca(Some(&ca_key));
         }
         
         // Otherwise, create both key and certificate
         self.create_ca(None)
+    }
+
+    /// Retrieve the CA cert in PEM format
+    pub fn get_ca_cert_pem(&self) -> CertResult<String> {
+        let ca_cert_path = self.get_ca_file_path();
+        if !ca_cert_path.exists() {
+            return Err(CertificateError::FileNotFound(ca_cert_path.display().to_string()));
+        }
+        let mut file = File::open(&ca_cert_path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
     }
 
     /// Create a new Certificate Authority
@@ -307,9 +372,31 @@ impl CertificateManager {
         cert_builder.sign(&ca_key, MessageDigest::sha256())?;
         let ca_cert = cert_builder.build();
         
+        // Backup old CA if it exists
+        if self.get_ca_file_path().exists() {
+            let backup_path = self.get_ca_file_path().with_extension("pem.bak");
+            fs::copy(self.get_ca_file_path(), backup_path).ok();
+        }
+
         // Save the CA certificate and private key
-        self.save_private_key(&ca_key, CA_KEY_FILENAME)?;
-        self.save_certificate(&ca_cert, CA_CERT_FILENAME)?;
+        self.save_private_key_absolute(&ca_key, &self.get_ca_key_path())?;
+        self.save_certificate_absolute(&ca_cert, &self.get_ca_file_path())?;
+        
+        Ok(())
+    }
+
+    /// Save a custom CA certificate and backup the old one if it exists
+    pub fn save_custom_ca(&self, file_contents: &[u8]) -> CertResult<()> {
+        let ca_cert_path = self.get_ca_file_path();
+        
+        // Backup old CA if it exists
+        if ca_cert_path.exists() {
+            let backup_path = ca_cert_path.with_extension("pem.bak");
+            fs::copy(&ca_cert_path, backup_path).ok();
+        }
+
+        let cert = X509::from_pem(file_contents)?;
+        self.save_certificate_absolute(&cert, &ca_cert_path)?;
         
         Ok(())
     }
@@ -320,8 +407,8 @@ impl CertificateManager {
         self.ensure_ca_exists()?;
         
         // Load CA key and certificate
-        let ca_key = self.load_private_key(CA_KEY_FILENAME)?;
-        let ca_cert = self.load_certificate(CA_CERT_FILENAME)?;
+        let ca_key = self.load_private_key_absolute(&self.get_ca_key_path())?;
+        let ca_cert = self.load_certificate_absolute(&self.get_ca_file_path())?;
         
         // Generate client private key
         let client_key = Self::generate_private_key()?;
@@ -468,14 +555,14 @@ impl CertificateManager {
         server_key: &PKey<Private>
     ) -> CertResult<()> {
         // Load CA key and certificate
-        let ca_key = match self.load_private_key(CA_KEY_FILENAME) {
+        let ca_key = match self.load_private_key_absolute(&self.get_ca_key_path()) {
             Ok(key) => key,
             Err(e) => return Err(CertificateError::ValidationError(
                 format!("Failed to load CA key: {}", e)
             )),
         };
         
-        let ca_cert = match self.load_certificate(CA_CERT_FILENAME) {
+        let ca_cert = match self.load_certificate_absolute(&self.get_ca_file_path()) {
             Ok(cert) => cert,
             Err(e) => return Err(CertificateError::ValidationError(
                 format!("Failed to load CA certificate: {}", e)

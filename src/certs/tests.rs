@@ -13,8 +13,8 @@ fn test_create_ca() {
     
     // Check CA files exist
     assert!(cert_manager.ca_exists());
-    assert!(temp_dir.path().join(CA_CERT_FILENAME).exists());
-    assert!(temp_dir.path().join(CA_KEY_FILENAME).exists());
+    assert!(cert_manager.get_ca_file_path().exists());
+    assert!(cert_manager.get_ca_key_path().exists());
 }
 
 #[test]
@@ -30,8 +30,8 @@ fn test_create_tenant_ca() {
     
     // Check CA files exist in tenant directory
     assert!(cert_manager.ca_exists());
-    assert!(temp_dir.path().join(&tenant_id).join(CA_CERT_FILENAME).exists());
-    assert!(temp_dir.path().join(&tenant_id).join(CA_KEY_FILENAME).exists());
+    assert!(cert_manager.get_ca_file_path().exists());
+    assert!(cert_manager.get_ca_key_path().exists());
 }
 
 #[test]
@@ -44,8 +44,8 @@ fn test_create_server_cert() {
     cert_manager.create_server_cert("example.com").unwrap();
     
     // Check files exist
-    assert!(temp_dir.path().join(CA_CERT_FILENAME).exists());
-    assert!(temp_dir.path().join(CA_KEY_FILENAME).exists());
+    assert!(cert_manager.get_ca_file_path().exists());
+    assert!(cert_manager.get_ca_key_path().exists());
     assert!(temp_dir.path().join(SERVER_CERT_FILENAME).exists());
     assert!(temp_dir.path().join(SERVER_KEY_FILENAME).exists());
 }
@@ -59,8 +59,8 @@ fn test_create_client_cert() {
     cert_manager.create_client_cert("client1").unwrap();
     
     // Check files exist
-    assert!(temp_dir.path().join(CA_CERT_FILENAME).exists());
-    assert!(temp_dir.path().join(CA_KEY_FILENAME).exists());
+    assert!(cert_manager.get_ca_file_path().exists());
+    assert!(cert_manager.get_ca_key_path().exists());
     assert!(temp_dir.path().join("client1-cert.pem").exists());
     assert!(temp_dir.path().join("client1-key.pem").exists());
 }
@@ -86,8 +86,8 @@ fn test_setup_creates_new_cert() {
     cert_manager.setup("example.com", &["example.com", "www.example.com"]).unwrap();
     
     // Check that files exist
-    assert!(temp_dir.path().join(CA_CERT_FILENAME).exists());
-    assert!(temp_dir.path().join(CA_KEY_FILENAME).exists());
+    assert!(cert_manager.get_ca_file_path().exists());
+    assert!(cert_manager.get_ca_key_path().exists());
     assert!(temp_dir.path().join(SERVER_CERT_FILENAME).exists());
     assert!(temp_dir.path().join(SERVER_KEY_FILENAME).exists());
     

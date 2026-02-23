@@ -15,6 +15,11 @@ use tokio::sync::broadcast::{Receiver, Sender};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info_span, warn, info};
+use crate::models::{TenantId, Tenant};
+use crate::db::DB;
+use std::sync::OnceLock;
+
+static GLOBAL_DB: OnceLock<Arc<DB>> = OnceLock::new();
 
 pub const DEFAULT_CONFIG: &str = r#"{
   "id": 0,
@@ -405,26 +410,84 @@ async fn start_event_handlers(
 async fn auth(
     client_id: String,
     username: String,
-    _password: String,
+    password: String,
     common_name: String,
     organization: String,
     ca_path: Option<String>,
 ) -> Result<Option<ClientInfo>, String> {
-    let _span = info_span!("authentication", client_id = %client_id, username = %username, common_name = %common_name, organization = %organization, ca_path = ?ca_path).entered();
-    // we can do auth on username and password or on common_name (from client certificate)
-    // if we have a common_name we need to check that it matches the client_id
-    if !common_name.is_empty() && client_id != common_name {
-        warn!("Client ID does not match certificate common name");
-        return Ok(None);
+    info!("authentication request: client_id={} username={} common_name={} organization={} ca_path={:?}", client_id, username, common_name, organization, ca_path);
+    
+    let db = match GLOBAL_DB.get() {
+        Some(db) => db,
+        None => {
+            error!("Global DB not initialized for auth handler");
+            return Err("Internal Server Error".to_string());
+        }
+    };
+
+    // Extract device_id (client_id)
+    // Find device metadata to get tenant
+    // Note: since the device id is usually unique across tenants or formatted as <tenant>-<device>,
+    // we might need to assume a way to find it. In forest, device lists are partitioned by tenant.
+    // However, if we don't know the tenant, we'd have to scan all, but typically the username might contain the tenant, 
+    // or we can allow the device metadata to be queried. 
+    // Wait, let's look at the models. We could require username to be tenant_id:username or similar, but for now 
+    // we'll fetch the first device matching device_id traversing tenants, OR we can require tenant to be passed as organization. 
+    // For now, let's assume TenantId::Default or from organization.
+    let tenant_str = if !organization.is_empty() { &organization } else { "default" };
+    let tenant_id = TenantId::from_str(tenant_str);
+
+    // Fetch tenant config
+    let tenant = db.get_tenant(&tenant_id).await
+        .map_err(|e| format!("DB Error: {}", e))?
+        .unwrap_or_else(|| Tenant::new(&tenant_id));
+
+    let auth_config = tenant.auth_config;
+
+    // Check certificates
+    if !common_name.is_empty() {
+        if !auth_config.allow_certificates {
+            warn!("Certificates are not allowed for this tenant");
+            return Ok(None);
+        }
+        if client_id != common_name {
+            warn!("Client ID does not match certificate common name");
+            return Ok(None);
+        }
+        // Valid cert auth
+        return Ok(Some(ClientInfo {
+            client_id,
+            tenant: Some(tenant_id.to_string()),
+        }));
     }
 
-    Ok(Some(ClientInfo {
-        client_id,
-        tenant: None, // Or however you determine tenant ID (e.g. from organization)
-    }))
+    // Check passwords
+    if !username.is_empty() {
+        if !auth_config.allow_passwords {
+             warn!("Passwords are not allowed for this tenant");
+             return Ok(None);
+        }
+        let is_valid = db.verify_device_password(&tenant_id, &client_id, &username, &password).await
+            .map_err(|e| format!("DB Error: {}", e))?;
+        if is_valid {
+             return Ok(Some(ClientInfo {
+                client_id,
+                tenant: Some(tenant_id.to_string()),
+            }));
+        } else {
+            warn!("Invalid username or password");
+            return Ok(None);
+        }
+    }
+
+    warn!("Provide either valid certificate or valid username/password");
+    Ok(None)
 }
 
-pub async fn start_broker(mqtt_config: Option<MqttConfig>) -> MqttServer {
+pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttServer {
+    // Initialize the global DB for the auth handler
+    let _ = GLOBAL_DB.set(db);
+
     let mut config = get_default_config();
 
     let mqtt_config = match mqtt_config {

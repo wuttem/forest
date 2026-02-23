@@ -74,6 +74,52 @@ pub type ShadowName = DefaultString;
 pub type TenantId = DefaultString;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    pub allow_passwords: bool,
+    pub allow_certificates: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            allow_passwords: false,
+            allow_certificates: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tenant {
+    pub tenant_id: TenantId,
+    pub auth_config: AuthConfig,
+    pub created_at: u64,
+}
+
+impl Tenant {
+    pub fn new(tenant_id: &TenantId) -> Self {
+        Self {
+            tenant_id: tenant_id.clone(),
+            auth_config: AuthConfig::default(),
+            created_at: chrono::Utc::now().timestamp() as u64,
+        }
+    }
+
+    pub fn with_auth_config(mut self, auth_config: AuthConfig) -> Self {
+        self.auth_config = auth_config;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceCredential {
+    pub tenant_id: TenantId,
+    pub device_id: String,
+    pub username: String,
+    pub password_hash: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceMetadata {
     pub device_id: String,
     pub tenant_id: TenantId,
