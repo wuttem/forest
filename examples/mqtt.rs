@@ -20,7 +20,7 @@ async fn main() {
     let receiver = mqtt_server.message_receiver();
     let back_channel = mqtt_server.mqtt.clone();
     tokio::spawn(async move {
-        while let Ok(message) = receiver.recv() {
+        while let Ok(message) = receiver.recv_async().await {
             on_message(message.topic, message.payload, back_channel.clone()).await;
         }
     });
@@ -39,6 +39,7 @@ async fn main() {
                     "things/testdevice0/shadow/update".to_string(),
                     "Ping!".as_bytes().to_vec(),
                 )
+                .await
                 .unwrap();
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
@@ -59,7 +60,7 @@ pub fn on_message(
         // Example: Send a message back to the device
         let return_topic = topic.replace("shadow/update", "shadow/update/accepted");
         let return_payload = "Hello, World!".as_bytes().to_vec();
-        mqtt_sender.publish(return_topic, return_payload).unwrap();
+        mqtt_sender.publish(return_topic, return_payload).await.unwrap();
         println!("Sent response to device");
     })
 }

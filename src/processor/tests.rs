@@ -84,6 +84,7 @@ async fn test_time_request() {
     let payload = r#"{"device_time": 12345}"#.as_bytes().to_vec();
     sender
         .publish("things/device1/time/request".to_string(), payload)
+        .await
         .unwrap();
 
     let mut resp_msg = None;

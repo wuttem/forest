@@ -123,7 +123,7 @@ async fn heartbeat_task(publish_channel: MqttSender) {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         let now = chrono::Utc::now().timestamp() as u64;
         let payload = format!("{{\"ts\":{}}}", now).into_bytes();
-        if let Err(e) = publish_channel.publish("public/heartbeat".to_string(), payload) {
+        if let Err(e) = publish_channel.publish("public/heartbeat".to_string(), payload).await {
             error!(error=?e, "Error sending heartbeat");
             break;
         } else {

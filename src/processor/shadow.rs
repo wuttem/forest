@@ -17,7 +17,7 @@ pub(crate) fn get_delta_return_topic(
     }
 }
 
-pub fn send_delta_to_mqtt(
+pub async fn send_delta_to_mqtt(
     shadow: &Shadow,
     mqtt_sender: &MqttSender,
     shadow_topic_prefix: &str,
@@ -28,7 +28,7 @@ pub fn send_delta_to_mqtt(
     let delta_json = shadow.get_delta_response_json()?;
     match delta_json {
         Some(json) => {
-            mqtt_sender.publish(return_topic.to_string(), json.into_bytes())?;
+            mqtt_sender.publish(return_topic.to_string(), json.into_bytes()).await?;
             debug!(topic = return_topic, "Delta sent to device");
             Ok(true)
         }
@@ -44,7 +44,7 @@ pub(crate) async fn process_update_document(
         &shadow,
         &state.mqtt_sender,
         &state.config.shadow_topic_prefix,
-    )?;
+    ).await?;
     info!(
         %update_doc.tenant_id,
         update_doc.device_id, %update_doc.shadow_name, delta_sent, "Processed shadow update"

@@ -41,16 +41,16 @@ pub struct MqttSender {
 }
 
 impl MqttSender {
-    pub fn publish(&self, topic: String, payload: Vec<u8>) -> Result<(), MqttError> {
-        self.channel.send(MqttCommand::Publish(MqttMessage {
+    pub async fn publish(&self, topic: String, payload: Vec<u8>) -> Result<(), MqttError> {
+        self.channel.send_async(MqttCommand::Publish(MqttMessage {
             topic: topic,
             payload: payload,
-        }))?;
+        })).await?;
         Ok(())
     }
 
     pub async fn subscribe(&self, topic: String) -> Result<(), MqttError> {
-        self.channel.send(MqttCommand::Subscribe(topic))?;
+        self.channel.send_async(MqttCommand::Subscribe(topic)).await?;
         Ok(())
     }
 

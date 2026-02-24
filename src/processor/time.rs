@@ -46,7 +46,8 @@ pub(crate) async fn handle_time_request(
 
     state
         .mqtt_sender
-        .publish(return_topic, response_json.into_bytes())?;
+        .publish(return_topic, response_json.into_bytes())
+        .await?;
 
     Ok(())
 }

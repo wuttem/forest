@@ -70,10 +70,11 @@ async fn test_publish_subscribe() {
     server
         .mqtt
         .publish("test/topic".to_string(), test_payload.clone())
+        .await
         .unwrap();
 
     // Receive message
-    if let Ok(msg) = receiver.recv() {
+    if let Ok(msg) = receiver.recv_async().await {
         assert_eq!(msg.topic, "test/topic");
         assert_eq!(msg.payload, test_payload);
     }
