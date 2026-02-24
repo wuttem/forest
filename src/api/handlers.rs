@@ -6,7 +6,7 @@ use crate::api::AppState;
 use crate::certs::CertificateData;
 use crate::dataconfig::{DataConfig, DataConfigEntry};
 use crate::db::DatabaseError;
-use crate::models::{AuthConfig, DeviceCredential, DeviceInformation, DeviceMetadata, Tenant};
+use crate::models::{DeviceCredential, DeviceInformation, DeviceMetadata, Tenant};
 use crate::models::{ShadowName, TenantId};
 use crate::processor::send_delta_to_mqtt;
 use crate::shadow::{NestedStateDocument, Shadow, StateUpdateDocument};
@@ -357,7 +357,7 @@ pub async fn post_device_metadata_handler(
         // You might want to store this key in the device metadata
         // or use it for certificate generation
     }
-    let mut metadata = create_device(&device_id, &tenant_id, db, cert_manager).await?;
+    let metadata = create_device(&device_id, &tenant_id, db, cert_manager).await?;
 
     match state.db.put_device_metadata(&metadata).await {
         Ok(_) => Ok(Json(metadata)),
@@ -421,7 +421,8 @@ pub async fn get_device_info_handler(
             if let Ok(clients) = controller.get_clients().await {
                 if let Some(client) = clients.into_iter().find(|c| c.client_id == device_id) {
                     if !client.message_rates.is_empty() {
-                        let current_minute_start_sec = (chrono::Utc::now().timestamp() as u64 / 60) * 60;
+                        let current_minute_start_sec =
+                            (chrono::Utc::now().timestamp() as u64 / 60) * 60;
                         let mut rates = Vec::new();
                         for (i, &rate) in client.message_rates.iter().skip(1).take(5).enumerate() {
                             rates.push(crate::models::MinuteRate {
@@ -670,4 +671,26 @@ pub async fn generate_client_cert_handler(
             e
         ))),
     }
+}
+
+#[derive(Deserialize)]
+pub struct TimeRequestQuery {
+    pub device_time: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct TimeResponse {
+    pub server_time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_time: Option<u64>,
+}
+
+pub async fn time_handler(
+    Query(query): Query<TimeRequestQuery>,
+) -> Result<Json<TimeResponse>, AppError> {
+    let server_time = chrono::Utc::now().timestamp_millis() as u64;
+    Ok(Json(TimeResponse {
+        server_time,
+        device_time: query.device_time,
+    }))
 }

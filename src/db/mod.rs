@@ -1,14 +1,12 @@
 use crate::dataconfig::{DataConfig, DataConfigEntry};
 use crate::models::{DeviceCredential, DeviceMetadata, ShadowName, Tenant, TenantId};
 use crate::shadow::{Shadow, ShadowError, ShadowSerializationError, StateUpdateDocument};
-use crate::timeseries::{
-    MetricTimeSeries, MetricValue, TimeSeriesConversions, TimeseriesSerializationError,
-};
+use crate::timeseries::{MetricTimeSeries, MetricValue, TimeseriesSerializationError};
 use serde::{Deserialize, Serialize};
-use sqlx::{any::AnyPoolOptions, query, AnyPool, Row};
+use sqlx::{any::AnyPoolOptions, AnyPool, Row};
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::warn;
 
 const MAX_FUTURE_SECONDS: u64 = 60 * 60 * 24 * 365;
 
@@ -93,7 +91,7 @@ impl DB {
 
         let is_postgres = config.path.starts_with("postgres");
         let blob_type = if is_postgres { "BYTEA" } else { "BLOB" };
-        let serial_type = if is_postgres { "SERIAL" } else { "INTEGER" };
+        let _serial_type = if is_postgres { "SERIAL" } else { "INTEGER" };
 
         // Create table for general Key-Value (similar to rocksdb)
         let kv_query = format!(
@@ -760,7 +758,7 @@ impl DB {
 
             if let Some(d_id) = device_id {
                 // Find all matching prefixes
-                let mut d_id_like = d_id.to_string();
+                let d_id_like = d_id.to_string();
                 let rows: Vec<(String, String)> = sqlx::query_as(
                     "SELECT device_prefix, config FROM data_configs WHERE tenant_id = $1 AND device_prefix != $2"
                 )
@@ -919,12 +917,11 @@ impl DB {
         device_id: &str,
     ) -> Result<Option<DeviceMetadata>, DatabaseError> {
         if let Some(pool) = &self.pool {
-            let row: Option<(String,)> = sqlx::query_as(
-                "SELECT metadata FROM device_metadata WHERE device_id = $1 LIMIT 1",
-            )
-            .bind(device_id)
-            .fetch_optional(&**pool)
-            .await?;
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT metadata FROM device_metadata WHERE device_id = $1 LIMIT 1")
+                    .bind(device_id)
+                    .fetch_optional(&**pool)
+                    .await?;
 
             match row {
                 Some((metadata_str,)) => {

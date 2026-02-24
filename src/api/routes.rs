@@ -1,7 +1,7 @@
 use crate::api::handlers::*;
 use crate::api::AppState;
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Router,
 };
 
@@ -9,6 +9,7 @@ pub fn get_routes(state: AppState) -> Router {
     Router::new()
         .route("/", get(home_handler))
         .route("/health", get(health_handler))
+        .route("/time", get(time_handler))
         .route(
             "/{tenant_id}/things/{device_id}/shadow",
             get(get_shadow_handler)

@@ -1,17 +1,17 @@
+use rumqttd::{AdminLink, Broker, ClientStatus};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::net::SocketAddr;
 use tokio::sync::broadcast::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
-use rumqttd::{AdminLink, Broker, ClientStatus};
 
 use crate::db::DB;
-use crate::mqtt::config::{get_default_config, MqttConfig};
-use crate::mqtt::messages::{MqttMessage, MqttSender, MqttCommand};
-use crate::mqtt::handlers::{start_event_handlers, ServerLinks};
 use crate::mqtt::auth::auth;
+use crate::mqtt::config::{get_default_config, MqttConfig};
+use crate::mqtt::handlers::{start_event_handlers, ServerLinks};
+use crate::mqtt::messages::{MqttCommand, MqttMessage, MqttSender};
 
 pub static GLOBAL_DB: OnceLock<Arc<DB>> = OnceLock::new();
 
@@ -126,7 +126,8 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
 
     let (link_tx, link_rx, router_tx, connection_monitor_tx, connection_id) =
         broker.get_broker_links().unwrap();
-    let admin_link = broker.admin_link("forest_admin", 200).unwrap();
+    let mut admin_link = broker.admin_link("forest_admin", 200).unwrap();
+    admin_link.subscribe("#").unwrap();
     let alerts = broker.alerts().unwrap();
     let metrics = broker.meters().unwrap();
     let (tx, rx) = flume::bounded::<MqttCommand>(400);
@@ -156,7 +157,7 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
     // Oneshot Shutdown signal
     // let (main_sd_s, main_sd_r) = tokio::sync::oneshot::channel::<usize>();
     let main_cancel_token = cancel_token.clone();
-    
+
     let controller = broker.controller();
     let _main_thread_handle = thread::spawn(move || {
         broker.start().unwrap();
@@ -206,4 +207,3 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
 
     return mqtt_server;
 }
-

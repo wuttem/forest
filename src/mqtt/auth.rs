@@ -1,9 +1,7 @@
-use std::sync::Arc;
-use tracing::{error, info, warn};
-use crate::db::DB;
 use crate::models::{Tenant, TenantId};
-use rumqttd::ClientInfo;
 use crate::mqtt::server::GLOBAL_DB;
+use rumqttd::ClientInfo;
+use tracing::{error, info, warn};
 
 pub(crate) async fn auth(
     client_id: String,

@@ -1,9 +1,8 @@
+use rumqttd::local::LinkError;
+use rumqttd::ConnectionId;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use rumqttd::local::LinkError;
-use rumqttd::ConnectionId;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{error, warn};
 

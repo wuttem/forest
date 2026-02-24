@@ -60,8 +60,6 @@ pub const DEFAULT_CONFIG: &str = r#"{
   }
 }"#;
 
-use thiserror::Error;
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MqttConfig {
     pub enable_heartbeat: bool,
@@ -90,7 +88,6 @@ impl Default for MqttConfig {
         }
     }
 }
-
 
 pub fn get_default_config() -> rumqttd::Config {
     let config = serde_json::from_str(DEFAULT_CONFIG).unwrap();

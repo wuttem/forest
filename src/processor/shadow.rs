@@ -1,10 +1,14 @@
-use crate::processor::{ProcessorState, ProcessorError};
-use crate::mqtt::MqttSender;
-use crate::shadow::{Shadow, StateUpdateDocument};
 use crate::models::{ShadowName, TenantId};
+use crate::mqtt::MqttSender;
+use crate::processor::{ProcessorError, ProcessorState};
+use crate::shadow::{Shadow, StateUpdateDocument};
 use tracing::{debug, info};
 
-pub(crate) fn get_delta_return_topic(device_id: &str, shadow_name: &ShadowName, topic_prefix: &str) -> String {
+pub(crate) fn get_delta_return_topic(
+    device_id: &str,
+    shadow_name: &ShadowName,
+    topic_prefix: &str,
+) -> String {
     match shadow_name {
         ShadowName::Default => format!("{}{}/shadow/update/delta", topic_prefix, device_id),
         ShadowName::Custom(name) => {

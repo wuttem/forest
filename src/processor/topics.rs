@@ -1,6 +1,6 @@
 use crate::models::{ShadowName, TenantId};
 use crate::mqtt::MqttMessage;
-use crate::processor::{ProcessorState, ProcessorConfig};
+use crate::processor::ProcessorState;
 
 type DeviceId = String;
 
@@ -9,6 +9,7 @@ pub enum TopicType {
     ShadowUpdate(TenantId, DeviceId, ShadowName),
     DataUpdate(TenantId, DeviceId),
     ShadowDelta(TenantId, DeviceId, ShadowName),
+    TimeRequest(TenantId, DeviceId),
     Other,
 }
 fn split_device_id(device_id: &str) -> (TenantId, DeviceId) {
@@ -80,6 +81,10 @@ pub(crate) fn get_topic_type(msg: &MqttMessage, processor_state: &ProcessorState
         [device_id, "shadow", shadow_name, "update", "delta"] => {
             let (tenant, device) = split_device_id(device_id);
             return TopicType::ShadowDelta(tenant, device, ShadowName::from_str(shadow_name));
+        }
+        [device_id, "time", "request"] => {
+            let (tenant, device) = split_device_id(device_id);
+            return TopicType::TimeRequest(tenant, device);
         }
         _ => {
             return TopicType::Other;

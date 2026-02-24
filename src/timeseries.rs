@@ -187,7 +187,7 @@ impl<T> TimeSeries<T> {
     }
 
     /// Returns an iterator over the timestamp-value pairs in the time series.
-    pub fn iter(&self) -> TimeSeriesIter<T> {
+    pub fn iter(&self) -> TimeSeriesIter<'_, T> {
         TimeSeriesIter {
             timestamps: self.timestamps.iter(),
             values: self.values.iter(),
@@ -213,7 +213,7 @@ impl<T> TimeSeries<T> {
     ///     println!("At {}: {}", ts, value);
     /// }
     /// ```
-    pub fn range(&self, start_ts: u64, end_ts: u64) -> TimeSeriesRangeIter<T> {
+    pub fn range(&self, start_ts: u64, end_ts: u64) -> TimeSeriesRangeIter<'_, T> {
         let start_idx = self
             .timestamps
             .binary_search(&start_ts)
@@ -392,7 +392,7 @@ impl<T: Clone> TimeSeries<T> {
     ///     println!("Bucket with {} points", bucket.len());
     /// }
     /// ```
-    pub fn buckets(&self) -> TimeSeriesBucketIter<T> {
+    pub fn buckets(&self) -> TimeSeriesBucketIter<'_, T> {
         TimeSeriesBucketIter {
             series: self,
             current_idx: 0,

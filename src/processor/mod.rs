@@ -1,25 +1,26 @@
 pub mod shadow;
+pub mod time;
 pub mod timeseries;
 pub mod topics;
 
 pub use shadow::send_delta_to_mqtt;
 
-use std::sync::Arc;
-use tokio::task::JoinSet;
-use tracing::{warn, debug_span, Instrument};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use rumqttd::AdminLink;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::broadcast::Receiver;
+use tokio::task::JoinSet;
+use tracing::{debug, debug_span, warn, Instrument};
 
 use crate::db::DB;
 use crate::mqtt::{ClientStatus, MqttError, MqttMessage, MqttSender};
 use crate::server::ConnectionSet;
-use crate::models::TenantId;
 
-use crate::processor::topics::{TopicType, get_topic_type};
 use crate::processor::shadow::handle_shadow_update;
+use crate::processor::time::handle_time_request;
 use crate::processor::timeseries::handle_metric_extraction;
+use crate::processor::topics::{get_topic_type, TopicType};
 
 #[derive(Error, Debug)]
 pub enum ProcessorError {
@@ -108,8 +109,15 @@ async fn handle_message(msg: MqttMessage, state: ProcessorState) {
                 async move { handle_metric_extraction(&tid, &did, payload, state).await }
             });
         }
+        TopicType::TimeRequest(tid, did) => {
+            task_set.spawn({
+                let state = state.clone();
+                let payload = payload.clone();
+                async move { handle_time_request(&tid, &did, payload, state).await }
+            });
+        }
         _ => {
-            warn!(topic = msg.topic, "Unknown topic type");
+            println!("Unknown target {:?}", msg.topic);
         }
     }
 
@@ -128,20 +136,33 @@ async fn handle_message(msg: MqttMessage, state: ProcessorState) {
 }
 
 async fn run_stream_worker(mut admin_link: AdminLink, state: ProcessorState) {
-    while let Ok(Some((publish, client_info))) = admin_link.recv().await {
-        if let Ok(topic) = std::str::from_utf8(&publish.topic) {
-            let msg = MqttMessage {
-                topic: topic.to_string(),
-                payload: publish.payload.to_vec(),
-            };
+    loop {
+        let rs = admin_link.recv().await;
+        match rs {
+            Ok(Some((publish, client_info))) => {
+                if let Ok(topic) = std::str::from_utf8(&publish.topic) {
+                    let msg = MqttMessage {
+                        topic: topic.to_string(),
+                        payload: publish.payload.to_vec(),
+                    };
 
-            // NOTE: client_info could be passed to handle_message if needed in the future
-            let _ = client_info.client_id;
-
-            let state = state.clone();
-            tokio::spawn(async move {
-                let _ = handle_message(msg, state).await;
-            });
+                    let _ = client_info.client_id;
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        let _ = handle_message(msg, state).await;
+                    });
+                } else {
+                    warn!("publish admin topic could not be decoded!");
+                }
+            }
+            Ok(None) => {
+                debug!("admin link closed! Ok(None)");
+                break;
+            }
+            Err(e) => {
+                debug!("admin link closed! Err({:?})", e);
+                break;
+            }
         }
     }
 }
@@ -207,6 +228,7 @@ pub async fn start_processor(
     let mut topic_patterns = vec![
         format!("{}+/shadow/update", config.shadow_topic_prefix),
         format!("{}+/shadow/+/update", config.shadow_topic_prefix),
+        format!("{}+/time/request", config.shadow_topic_prefix),
     ];
     topic_patterns.extend(config.telemetry_topics.clone());
     processor.subscribe_shadow_updates(topic_patterns).await?;

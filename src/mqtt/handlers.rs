@@ -1,14 +1,14 @@
+use futures_util::stream::StreamExt;
+use rumqttd::local::{LinkRx, LinkTx};
+use rumqttd::Meter::Router;
+use rumqttd::{alerts::AlertsLink, meters::MetersLink, Alert, Meter, Notification};
 use std::sync::Arc;
 use tokio::select;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, warn};
 use tokio_util::sync::CancellationToken;
-use rumqttd::local::{LinkRx, LinkTx};
-use rumqttd::{alerts::AlertsLink, meters::MetersLink, Meter, Notification, Alert};
-use rumqttd::Meter::Router;
-use futures_util::stream::StreamExt;
+use tracing::{debug, error, info, warn};
 
-use crate::mqtt::messages::{MqttCommand, MqttMessage, MqttSender, MqttError};
+use crate::mqtt::messages::{MqttCommand, MqttError, MqttMessage, MqttSender};
 use crate::mqtt::server::MqttServerMetrics;
 
 pub(crate) struct ServerLinks {
@@ -43,7 +43,7 @@ async fn mqtt_send_handler(
     publish_receiver: flume::Receiver<MqttCommand>,
     metrics: &Arc<MqttServerMetrics>,
 ) {
-    while let Ok(message) = publish_receiver.recv() {
+    while let Ok(message) = publish_receiver.recv_async().await {
         match message {
             MqttCommand::Publish(message) => {
                 let r = tx_link.publish(message.topic, message.payload);

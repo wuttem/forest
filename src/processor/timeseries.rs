@@ -1,5 +1,5 @@
-use crate::processor::{ProcessorState, ProcessorError};
 use crate::models::TenantId;
+use crate::processor::{ProcessorError, ProcessorState};
 use tracing::{debug, info};
 
 pub(crate) async fn handle_metric_extraction(
