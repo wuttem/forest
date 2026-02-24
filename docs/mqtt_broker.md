@@ -1,4 +1,4 @@
-# Device & Tenant Management
+# MQTT Broker & Device Registry
 
 Forest is designed to support **multi-tenant** architectures securely. It does not manage human web users; instead, its authentication system is built explicitly to identify, provision, and secure *Devices* connecting to the MQTT broker.
 
