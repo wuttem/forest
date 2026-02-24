@@ -59,6 +59,22 @@ Provisioning a device securely into the registry is a single API call for automa
 
 This endpoint seamlessly queries the Tenant's CA and securely issues a robust RSA-2048 x.509 Certificate and Private Key bundle constrained to the requested Device ID. The device then connects via mTLS supplying its client certificate. Forest validates the chain against the respective Tenant's CA, extracts the Common Name (mapping it to the Tenant ID), and allows the connection dynamically.
 
+### Device Rate Limiting
+
+Forest uses global **Dynamic Rate Limits** (messages/minute) enforced automatically by the broker. When a network route experiences widespread congestion, the broker mathematically tracks histograms and drops the top-publishing devices exceeding their safe designated thresholds, thereby protecting link stability.
+
+Forest uses the following safe global defaults per connection:
+- `lower_rate`: **60 msgs/minute** (probation safety bounds)
+- `higher_rate`: **6000 msgs/minute** (forced disconnect thresholds)
+
+You can view live histograms of these rates spanning the past 5 minutes natively through the device API:
+
+```bash
+GET /{tenant_id}/devices/{device_id}
+```
+
+The response includes a `past_minute_rates` array. This array contains up to 5 metrics tracking the historic minute `timestamp` and `mqtt_message_rate_in` (the exact counted volume of messages traversing the router for each of the past 5 minutes natively).
+
 ---
 
 ## Examples & Walkthroughs

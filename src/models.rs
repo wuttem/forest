@@ -128,6 +128,12 @@ pub struct DeviceMetadata {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinuteRate {
+    pub timestamp: u64,
+    pub mqtt_message_rate_in: u32,
+}
+
 // Add this struct to your models.rs file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInformation {
@@ -135,6 +141,7 @@ pub struct DeviceInformation {
     pub tenant_id: TenantId,
     pub certificate: Option<String>,
     pub connected: bool,
+    pub past_minute_rates: Option<Vec<MinuteRate>>,
     pub last_shadow_update: Option<u64>,
 }
 

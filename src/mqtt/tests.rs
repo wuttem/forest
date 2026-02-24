@@ -83,10 +83,11 @@ async fn test_publish_subscribe() {
 
 #[tokio::test]
 async fn test_auth_handler() {
-    let (db, _temp) = setup_db().await;
+    let (setup_db_inst, _temp) = setup_db().await;
 
-    // Set global DB manually for testing since we aren't calling start_broker
-    let _ = GLOBAL_DB.set(db.clone());
+    // Set global DB manually for testing if not already set by other tests
+    let _ = GLOBAL_DB.set(setup_db_inst);
+    let db = GLOBAL_DB.get().unwrap().clone();
 
     let tenant_id = TenantId::new("test_tenant");
     let mut auth_config = AuthConfig::default();

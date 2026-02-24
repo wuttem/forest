@@ -16,12 +16,13 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
-    db: Arc<DB>,
-    mqtt_sender: Option<MqttSender>,
-    mqtt_metrics: Arc<MqttServerMetrics>,
-    connected_clients: Arc<ConnectionSet>,
-    shadow_topic_prefix: String,
-    cert_manager: Arc<CertificateManager>,
+    pub db: Arc<DB>,
+    pub mqtt_sender: Option<MqttSender>,
+    pub mqtt_metrics: Arc<MqttServerMetrics>,
+    pub connected_clients: Arc<ConnectionSet>,
+    pub shadow_topic_prefix: String,
+    pub cert_manager: Arc<CertificateManager>,
+    pub broker_controller: Option<rumqttd::BrokerController>,
 }
 
 pub async fn start_api_server(
@@ -31,6 +32,7 @@ pub async fn start_api_server(
     mqtt_metrics: Arc<MqttServerMetrics>,
     connected_clients: Arc<ConnectionSet>,
     config: &ForestConfig,
+    broker_controller: Option<rumqttd::BrokerController>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let cert_manager =
         Arc::new(CertificateManager::new(&config.cert_dir, config.tenant_id.clone()).unwrap());
@@ -41,6 +43,7 @@ pub async fn start_api_server(
         connected_clients,
         shadow_topic_prefix: config.processor.shadow_topic_prefix.to_owned(),
         cert_manager,
+        broker_controller,
     };
     let app = get_routes(state);
     let listener = tokio::net::TcpListener::bind(bind_addr).await.unwrap();

@@ -34,6 +34,10 @@ pub async fn start_server(
     let mqtt_sender = mqtt_broker.mqtt.clone();
     let mqtt_admin = mqtt_broker.admin.take().unwrap(); // Move admin out of MqttServer
     let processor_db = db.clone();
+    let controller = mqtt_broker.controller.clone();
+    // Connection monitor for future use (e.g. rate limit enforcement)
+    let _conn_monitor = mqtt_broker.connection_monitor_subscribe();
+
     let connection_monitor_rx = mqtt_broker.connection_monitor_subscribe();
     let maybe_processor = start_processor(
         processor_db,
@@ -63,6 +67,7 @@ pub async fn start_server(
         mqtt_metrics,
         connected_clients,
         &config,
+        Some(controller),
     )
     .await;
 

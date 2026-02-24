@@ -914,6 +914,35 @@ impl DB {
         }
     }
 
+    pub async fn get_device_metadata_by_id(
+        &self,
+        device_id: &str,
+    ) -> Result<Option<DeviceMetadata>, DatabaseError> {
+        if let Some(pool) = &self.pool {
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT metadata FROM device_metadata WHERE device_id = $1 LIMIT 1",
+            )
+            .bind(device_id)
+            .fetch_optional(&**pool)
+            .await?;
+
+            match row {
+                Some((metadata_str,)) => {
+                    let metadata = serde_json::from_str(&metadata_str).map_err(|e| {
+                        DatabaseError::DatabaseValueError(format!(
+                            "Failed to deserialize device metadata: {}",
+                            e
+                        ))
+                    })?;
+                    Ok(Some(metadata))
+                }
+                None => Ok(None),
+            }
+        } else {
+            Err(DatabaseError::DatabaseConnectionError)
+        }
+    }
+
     pub async fn list_devices(
         &self,
         tenant_id: &TenantId,

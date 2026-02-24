@@ -333,6 +333,8 @@ pub async fn list_connections_handler(
     Ok(Json(connections))
 }
 
+/// Body for creating or updating device metadata.
+/// Includes an optional `key` for credentials.
 #[derive(Deserialize)]
 pub struct PutDeviceBody {
     key: Option<String>,
@@ -355,7 +357,7 @@ pub async fn post_device_metadata_handler(
         // You might want to store this key in the device metadata
         // or use it for certificate generation
     }
-    let metadata = create_device(&device_id, &tenant_id, db, cert_manager).await?;
+    let mut metadata = create_device(&device_id, &tenant_id, db, cert_manager).await?;
 
     match state.db.put_device_metadata(&metadata).await {
         Ok(_) => Ok(Json(metadata)),
@@ -412,11 +414,34 @@ pub async fn get_device_info_handler(
     }
 
     // Construct the DeviceInformation response
+    let mut past_minute_rates = None;
+
+    if connected {
+        if let Some(ref controller) = state.broker_controller {
+            if let Ok(clients) = controller.get_clients().await {
+                if let Some(client) = clients.into_iter().find(|c| c.client_id == device_id) {
+                    if !client.message_rates.is_empty() {
+                        let current_minute_start_sec = (chrono::Utc::now().timestamp() as u64 / 60) * 60;
+                        let mut rates = Vec::new();
+                        for (i, &rate) in client.message_rates.iter().skip(1).take(5).enumerate() {
+                            rates.push(crate::models::MinuteRate {
+                                timestamp: current_minute_start_sec - ((i as u64 + 1) * 60),
+                                mqtt_message_rate_in: rate,
+                            });
+                        }
+                        past_minute_rates = Some(rates);
+                    }
+                }
+            }
+        }
+    }
+
     let device_info = DeviceInformation {
         device_id: metadata.device_id,
         tenant_id: metadata.tenant_id,
         certificate: metadata.certificate,
         connected,
+        past_minute_rates,
         last_shadow_update,
     };
 

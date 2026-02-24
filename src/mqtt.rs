@@ -35,10 +35,14 @@ pub const DEFAULT_CONFIG: &str = r#"{
   },
   "router": {
     "id": 0,
-    "max_connections": 10010,
+    "dir": "/tmp/rumqttd",
+    "max_connections": 10000,
     "max_outgoing_packet_count": 200,
+    "max_segment_size": 104857600,
     "max_segment_count": 10,
-    "max_segment_size": 104857600
+    "default_lower_rate": 60.0,
+    "default_higher_rate": 6000.0,
+    "congestion_threshold": 0.8
   },
   "v4": {
     "1": {
@@ -202,6 +206,7 @@ pub struct MqttServerMetrics {
 pub struct MqttServer {
     pub mqtt: MqttSender,
     pub admin: Option<AdminLink>,
+    pub controller: rumqttd::BrokerController,
     receiver: flume::Receiver<MqttMessage>,
     pub cancel_token: CancellationToken,
     pub metrics: Arc<MqttServerMetrics>,
@@ -466,6 +471,9 @@ async fn auth(
         return Ok(Some(ClientInfo {
             client_id,
             tenant: Some(tenant_id.to_string()),
+            lower_rate: None,
+            higher_rate: None,
+            message_rates: vec![],
         }));
     }
 
@@ -483,6 +491,9 @@ async fn auth(
             return Ok(Some(ClientInfo {
                 client_id,
                 tenant: Some(tenant_id.to_string()),
+                lower_rate: None,
+                higher_rate: None,
+                message_rates: vec![],
             }));
         } else {
             warn!("Invalid username or password");
@@ -569,7 +580,7 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
 
     let (link_tx, link_rx, router_tx, connection_monitor_tx, connection_id) =
         broker.get_broker_links().unwrap();
-    let admin_link = broker.admin_link("forest_admin").unwrap();
+    let admin_link = broker.admin_link("forest_admin", 200).unwrap();
     let alerts = broker.alerts().unwrap();
     let metrics = broker.meters().unwrap();
     let (tx, rx) = flume::bounded::<MqttCommand>(400);
@@ -599,6 +610,8 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
     // Oneshot Shutdown signal
     // let (main_sd_s, main_sd_r) = tokio::sync::oneshot::channel::<usize>();
     let main_cancel_token = cancel_token.clone();
+    
+    let controller = broker.controller();
     let _main_thread_handle = thread::spawn(move || {
         broker.start().unwrap();
         main_cancel_token.cancel();
@@ -637,6 +650,7 @@ pub async fn start_broker(mqtt_config: Option<MqttConfig>, db: Arc<DB>) -> MqttS
     let mqtt_server = MqttServer {
         mqtt: sender.clone(),
         admin: Some(admin_link),
+        controller,
         receiver: message_receiver,
         cancel_token: cancel_token.clone(),
         metrics: metrics,
