@@ -10,6 +10,7 @@ micro-platform for IoT Devices. MQTT Broker with integrated DeviceRegistry, Devi
 
 ## Documentation
 
+- [Agent Instructions](AGENT_INSTRUCTIONS.md)
 - [Architecture Overview](docs/architecture.md)
 - [Device & Tenant Management](docs/device_management.md)
 - [Telemetry & Timeseries](docs/telemetry.md)
